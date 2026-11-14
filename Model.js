@@ -110,8 +110,10 @@ function detailLine(b) {
   return parts.join(" · ")
 }
 
+// Always `orble ssh`: boxes are IPv6-only, so a plain `ssh <host>` fails on
+// IPv4-only networks, and the CLI routes the connection either way.
 function sshCommand(b) {
-  return b && b.host ? "ssh " + b.host : "orble ssh " + (b ? b.name : "")
+  return b && validName(b.name) ? "orble ssh " + b.name : ""
 }
 
 function shortFingerprint(fp) {

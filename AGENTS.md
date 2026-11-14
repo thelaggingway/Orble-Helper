@@ -48,10 +48,12 @@ Checked against the `orble` CLI of 2026-11-14 (`orble update` reported `515f19f2
 - `ls`: `NAME  STATE  HOST  SIZE  SPENT  ACTIVE` then unlabeled extra words (`desktop` while the desktop runs). STATE is a glyph + word (`◐ suspended`, `● running`). SIZE `2c/4g`. Columns are aligned by rune. No boxes: `No boxes yet. Create one: orble new`.
 - `account`: email line, then `  boxes   <box>.<slug>.orble.tech`, `  credit  $5.00`, `  keys    1`.
 - `keys`: `<name>  SHA256:<43 chars>` per line. `keys add [file]` prompts for a path without one. `keys rm <fingerprint>`.
+- Box hosts resolve to IPv6 only: plain `ssh <host>` fails on IPv4-only networks ("Network is unreachable"), while `orble ssh <box> [-- cmd]` routes the connection itself. Copy SSH therefore copies `orble ssh <box>`.
 - `new [--ssh]` prints `✓ <name> ready in 0.16s`. No name, size or template options.
 - `suspend|resume|vnc <box>`, `rm <box> [-y]`, `desktop <box> [--off]` (viewer: `xtigervncviewer` or `remmina`, tunnel on 127.0.0.1:5901).
 - `exit-node [--lan] [--fallback] [box...]` runs until Ctrl-C.
 - `topup [dollars]` (10–500), `login` (Google, device code), `update`, hidden `__boxes`, `completion bash|zsh|fish`.
+- Idle boxes suspend on their own ("Automatic suspend" on orble.tech) and SSH resumes them; the idle timeout is undocumented and the CLI has no setting for it.
 - Config: `$XDG_CONFIG_HOME/orble/config.json` with `api`, `token`, `domain`.
 
 ## Releasing

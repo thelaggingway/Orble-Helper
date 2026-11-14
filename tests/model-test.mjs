@@ -54,8 +54,9 @@ t("formatting", () => {
   assert.equal(M.subline(b, ""), "Suspended · 2 vCPU · 4 GB · $0.0031 spent")
   assert.equal(M.subline(b, "resume"), "Resuming… · 2 vCPU · 4 GB · $0.0031 spent")
   assert.equal(M.detailLine(b), "active 30h ago · desktop on")
-  assert.equal(M.sshCommand(b), "ssh rku7.z.orble.tech")
+  assert.equal(M.sshCommand(b), "orble ssh rku7")
   assert.equal(M.sshCommand({ name: "x", host: "" }), "orble ssh x")
+  assert.equal(M.sshCommand({ name: "--help", host: "h" }), "")
   assert.equal(M.shortFingerprint(FP), "SHA256:VqNeCT+…NVTc")
   const now = 1_000_000
   assert.equal(M.ago(now, now - 30), "just now")

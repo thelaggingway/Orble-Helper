@@ -27,7 +27,7 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 
 | Action | CLI | Asks first? |
 |---|---|---|
-| Copy SSH | copies `ssh <box>.<account>.orble.tech` | No |
+| Copy SSH | copies `orble ssh <box>` (boxes are IPv6-only, so a plain `ssh <host>` fails on IPv4-only networks) | No |
 | Desktop | `orble vnc <box>`: the desktop in your browser, started if needed | No |
 | VNC viewer | `orble desktop <box>` in a terminal (shown only when `xtigervncviewer` or `remmina` is installed) | No |
 | Desktop off | `orble desktop <box> --off` (shown while the desktop runs) | No |
