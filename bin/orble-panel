@@ -1,0 +1,469 @@
+#!/usr/bin/env -S python3 -I
+"""Backend for the thelaggingway.orble-helper Omarchy bar panel.
+
+Everything the panel does goes through this script, which calls the
+`orble` CLI with a fixed argv (never a shell string), so the CLI's own
+sign-in is used and the plugin stores no token anywhere.
+
+  orble-panel status                     boxes, account, SSH keys and local .pub keys (one JSON)
+  orble-panel action <verb> ...          run one action and send a desktop notification
+  orble-panel exit-node [--lan] [--fallback] [box...]
+                                         become `orble exit-node` (the panel stops it with SIGINT)
+  orble-panel ssh <box>                  (in a terminal) orble ssh, resuming a suspended box
+  orble-panel desktop <box>              (in a terminal) the box's desktop in a local VNC viewer
+  orble-panel topup <dollars>            (in a terminal) orble topup, $10 to $500
+  orble-panel login                      (in a terminal) orble login
+  status | exit-node ... --demo          made-up data for screenshots; never calls the CLI
+
+Action verbs:
+  suspend|resume|rm|vnc|desktop-off <box>
+  new
+  keys-add <file.pub in ~/.ssh>
+  keys-rm <SHA256:fingerprint>
+  update
+"""
+
+import glob
+import json
+import os
+import re
+import selectors
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+CLI = shutil.which("orble") or os.path.expanduser("~/.local/bin/orble")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+KEYFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.pub$")
+HOST_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,200}\.orble\.tech$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+ENV = dict(os.environ, NO_COLOR="1", TERM="dumb")
+SSH_DIR = os.path.expanduser("~/.ssh")
+# Signed out, any orble command starts a browser sign-in. Seeing one of these ends the call.
+AUTH_MARKERS = (b"Not signed in", b"Signing in", b"orble.tech/cli?code=")
+VIEWERS = ("xtigervncviewer", "remmina")
+
+
+def config_path():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "orble", "config.json")
+
+
+def signed_in():
+    """True when the CLI has a stored sign-in. Only the token's presence is checked; it is never read out."""
+    try:
+        with open(config_path()) as f:
+            d = json.load(f)
+        return isinstance(d, dict) and bool(d.get("token"))
+    except (OSError, ValueError):
+        return False
+
+
+def clean(text):
+    return ANSI_RE.sub("", text).replace("\r", "\n")
+
+
+def cli(args, timeout=60):
+    """Run the CLI with no stdin. Returns (code, stdout, stderr); code 3 means it wanted to sign in."""
+    try:
+        p = subprocess.Popen([CLI, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=ENV)
+    except (FileNotFoundError, PermissionError):
+        return 127, "", "orble CLI not found"
+    bufs = {p.stdout.fileno(): bytearray(), p.stderr.fileno(): bytearray()}
+    sel = selectors.DefaultSelector()
+    for fd in bufs:
+        sel.register(fd, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    code = None
+    while sel.get_map():
+        left = deadline - time.monotonic()
+        if left <= 0:
+            code = 124
+            break
+        for key, _ in sel.select(min(left, 1.0)):
+            chunk = os.read(key.fd, 65536)
+            if not chunk:
+                sel.unregister(key.fd)
+            elif len(bufs[key.fd]) < 1 << 20:
+                bufs[key.fd] += chunk
+        if any(m in b for b in bufs.values() for m in AUTH_MARKERS):
+            code = 3
+            break
+    if code is not None:
+        p.kill()
+    rc = p.wait()
+    out, err = (clean(bytes(bufs[f]).decode("utf-8", "replace")) for f in (p.stdout.fileno(), p.stderr.fileno()))
+    p.stdout.close()
+    p.stderr.close()
+    if code == 124:
+        return 124, out, "timed out"
+    if code == 3:
+        return 3, out, "Not signed in to Orble"
+    return rc, out, err
+
+
+def s(v, n=120):
+    return str(v)[:n] if v is not None else ""
+
+
+def last_lines(*texts, n=3):
+    lines = [l.strip() for t in texts for l in t.splitlines() if l.strip()]
+    return " ".join(lines[-n:])[:300]
+
+
+# ---------- parsing the CLI's tables ----------
+
+def parse_table(text):
+    """Rows of a left-aligned table whose first line holds the column names, as dicts.
+    Cells are cut at the header's column starts; anything past the last named column
+    (after two spaces) is returned as the row's "extra" words."""
+    lines = [l for l in clean(text).splitlines() if l.strip()]
+    for i, line in enumerate(lines):
+        if re.match(r"^NAME\s{2,}", line):
+            header, rows = line, lines[i + 1:]
+            break
+    else:
+        return []
+    cols = [(m.group(), m.start()) for m in re.finditer(r"\S+", header)]
+    out = []
+    for row in rows[:200]:
+        rec = {}
+        for j, (name, start) in enumerate(cols):
+            end = cols[j + 1][1] if j + 1 < len(cols) else None
+            rec[name] = row[start:end].strip() if end else row[start:].strip()
+        last = cols[-1][0]
+        parts = re.split(r"\s{2,}", rec.get(last, ""))
+        rec[last], rec["extra"] = parts[0], [p for p in parts[1:] if p]
+        out.append(rec)
+    return out
+
+
+def parse_boxes(text):
+    boxes = []
+    for r in parse_table(text)[:100]:
+        name = r.get("NAME", "")
+        if not NAME_RE.match(name):
+            continue
+        state = re.sub(r"^[^A-Za-z]+", "", r.get("STATE", "")).strip().lower()
+        size = re.fullmatch(r"(\d{1,3})c/(\d{1,4})g", r.get("SIZE", ""))
+        spent = re.fullmatch(r"\$(\d{1,7}(?:\.\d{1,6})?)", r.get("SPENT", ""))
+        host = r.get("HOST", "")
+        boxes.append({
+            "name": name,
+            "state": s(state, 32) if re.fullmatch(r"[a-z][a-z -]*", state or "") else "unknown",
+            "host": host if HOST_RE.match(host) else "",
+            "vcpus": int(size[1]) if size else 0,
+            "memGiB": int(size[2]) if size else 0,
+            "spentUSD": float(spent[1]) if spent else 0.0,
+            "active": s(r.get("ACTIVE"), 24),
+            "flags": [s(f, 24) for f in r.get("extra", [])[:4] if re.fullmatch(r"[A-Za-z][A-Za-z -]*", f)],
+        })
+    return boxes
+
+
+def parse_account(text):
+    lines = [l for l in clean(text).splitlines() if l.strip()]
+    acct = {"email": "", "domain": "", "creditUSD": None, "keys": 0}
+    if not lines:
+        return acct
+    acct["email"] = s(lines[0].strip(), 120)
+    for l in lines[1:]:
+        m = re.match(r"^\s+([a-z][a-z ]*?)\s{2,}(\S.*)$", l)
+        if not m:
+            continue
+        k, v = m[1], m[2].strip()
+        if k == "boxes":
+            d = re.fullmatch(r"<box>\.([a-z0-9-]{1,63})\.orble\.tech", v)
+            acct["domain"] = d[1] if d else ""
+        elif k == "credit":
+            c = re.fullmatch(r"-?\$(\d{1,7}(?:\.\d{1,6})?)", v)
+            acct["creditUSD"] = (-1 if v.startswith("-") else 1) * float(c[1]) if c else None
+        elif k == "keys" and re.fullmatch(r"\d{1,4}", v):
+            acct["keys"] = int(v)
+    return acct
+
+
+def parse_keys(text):
+    keys = []
+    for l in clean(text).splitlines()[:100]:
+        m = re.match(r"^(.*?)\s+(SHA256:[A-Za-z0-9+/]{43})\s*$", l)
+        if m:
+            keys.append({"name": s(m[1].strip(), 64), "fingerprint": m[2]})
+    return keys
+
+
+def local_keys(uploaded):
+    """Public keys in ~/.ssh with their fingerprints; `added` marks the ones already on the account."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(SSH_DIR, "*.pub")))[:20]:
+        base = os.path.basename(path)
+        if not KEYFILE_RE.match(base) or not os.path.isfile(path):
+            continue
+        try:
+            p = subprocess.run(["ssh-keygen", "-lf", path], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        m = re.match(r"^\d+\s+(SHA256:[A-Za-z0-9+/]{43})\s+(.*?)\s+\(([A-Z0-9-]+)\)\s*$", p.stdout.strip())
+        if p.returncode == 0 and m:
+            out.append({"file": base, "fingerprint": m[1], "comment": s(m[2], 64), "type": s(m[3], 16),
+                        "added": m[1] in uploaded})
+    return out
+
+
+def viewer():
+    return next((v for v in VIEWERS if shutil.which(v)), "")
+
+
+def status():
+    out = {"ok": True, "error": "", "authError": False, "account": None, "boxes": [], "keys": [],
+           "localKeys": [], "viewer": viewer()}
+    if not os.access(CLI, os.X_OK):
+        out.update(ok=False, error="The orble CLI isn't installed (see orble.tech/docs)")
+        print(json.dumps(out))
+        return
+    if not signed_in():
+        out.update(ok=False, authError=True, error="Not signed in to Orble")
+        print(json.dumps(out))
+        return
+    with ThreadPoolExecutor(3) as ex:
+        futures = {k: ex.submit(cli, v, 30) for k, v in {"ls": ["ls"], "account": ["account"], "keys": ["keys"]}.items()}
+        res = {k: f.result() for k, f in futures.items()}
+
+    code, text, err = res["ls"]
+    if code != 0:
+        out.update(ok=False, authError=code == 3, error=(last_lines(err, text) or f"exit {code}")[:300])
+        print(json.dumps(out))
+        return
+    out["boxes"] = parse_boxes(text)
+    code, text, _ = res["account"]
+    if code == 0:
+        out["account"] = parse_account(text)
+    code, text, _ = res["keys"]
+    if code == 0:
+        out["keys"] = parse_keys(text)
+    out["localKeys"] = local_keys({k["fingerprint"] for k in out["keys"]})
+    print(json.dumps(out))
+
+
+# ---------- actions ----------
+
+def notify(title, body, urgent=False):
+    cmd = shutil.which("omarchy-notification-send")
+    if cmd:
+        args = [cmd, "--app-name", "Orble", "-g", "\U000F048B", "-u", "critical" if urgent else "normal", title, body]
+    else:
+        args = ["notify-send", "-a", "Orble", title, body]
+    try:
+        subprocess.run(args, timeout=10)
+    except Exception:
+        pass
+
+
+def check_name(v):
+    if not NAME_RE.match(v or ""):
+        raise SystemExit(f"invalid box name: {v!r}")
+    return v
+
+
+def check_fp(v):
+    if not FP_RE.match(v or ""):
+        raise SystemExit(f"invalid key fingerprint: {v!r}")
+    return v
+
+
+def check_keyfile(v):
+    """A .pub file directly in ~/.ssh (after resolving links)."""
+    if not KEYFILE_RE.match(v or ""):
+        raise SystemExit(f"invalid key file: {v!r}")
+    path = os.path.join(SSH_DIR, v)
+    real = os.path.realpath(path)
+    if os.path.dirname(real) != os.path.realpath(SSH_DIR) or not os.path.isfile(real):
+        raise SystemExit(f"not a public key in ~/.ssh: {v!r}")
+    return path
+
+
+def check_dollars(v):
+    if not re.fullmatch(r"\d{2,3}", v or "") or not 10 <= int(v) <= 500:
+        raise SystemExit("top-up must be whole dollars, 10 to 500")
+    return str(int(v))
+
+
+ONE_ARG = {
+    # verb: (argv builder, timeout seconds, success text)
+    "suspend": (lambda b: ["suspend", b], 180, "{b} suspended"),
+    "resume": (lambda b: ["resume", b], 180, "{b} resumed"),
+    "rm": (lambda b: ["rm", b, "-y"], 180, "{b} and its disk deleted"),
+    "vnc": (lambda b: ["vnc", b], 180, "Opening the desktop of {b} in your browser"),
+    "desktop-off": (lambda b: ["desktop", b, "--off"], 120, "Desktop on {b} turned off"),
+}
+
+
+def credit():
+    code, text, _ = cli(["account"], 30)
+    return parse_account(text)["creditUSD"] if code == 0 else None
+
+
+def action(argv):
+    if not argv:
+        raise SystemExit("action needs a verb")
+    verb, rest = argv[0], argv[1:]
+    if verb in ONE_ARG and len(rest) == 1:
+        build, timeout, ok = ONE_ARG[verb]
+        b = check_name(rest[0])
+        args, text = build(b), ok.format(b=b)
+    elif verb == "new" and not rest:
+        args, timeout, text = ["new"], 300, "New box ready"
+    elif verb == "keys-add" and len(rest) == 1:
+        path = check_keyfile(rest[0])
+        args, timeout, text = ["keys", "add", path], 60, f"SSH key {rest[0]} added"
+    elif verb == "keys-rm" and len(rest) == 1:
+        fp = check_fp(rest[0])
+        args, timeout, text = ["keys", "rm", fp], 60, f"SSH key {fp[:15]}… removed"
+    elif verb == "update" and not rest:
+        args, timeout, text = ["update"], 300, ""
+    else:
+        raise SystemExit(f"unknown action: {verb} {rest}")
+
+    if not signed_in():
+        notify(f"Orble: {verb} failed", "Not signed in. Use Sign in in the panel, or run orble login.", urgent=True)
+        sys.exit(3)
+    if verb == "new":
+        # With no credit, `orble new` offers a top-up at a [Y/n] prompt; never get there off a terminal.
+        c = credit()
+        if c is not None and c <= 0:
+            notify("Orble: no credit", "Add credit before creating a box (Add credit in the panel, or orble topup).", urgent=True)
+            sys.exit(5)
+
+    code, out, err = cli(args, timeout)
+    if code == 0:
+        if verb == "new":
+            m = re.search(r"\b([A-Za-z0-9][A-Za-z0-9._-]{0,62}) ready\b(.*)", out)
+            text = f"{m[1]} ready{m[2].rstrip()}" if m else text
+        elif verb == "update":
+            text = last_lines(out, n=1) or "Orble CLI updated"
+        notify("Orble", text[:200])
+    else:
+        notify(f"Orble: {verb} failed", last_lines(err, out) or f"exit {code}", urgent=True)
+    sys.exit(code)
+
+
+# ---------- terminal commands (run inside omarchy-launch-tui) ----------
+
+def hold(code, always=False):
+    if code != 0 or always:
+        print(f"\n{'Done' if code == 0 else f'orble exited with {code}'}. Press Enter to close.")
+        try:
+            input()
+        except EOFError:
+            pass
+    sys.exit(code)
+
+
+def in_terminal(title, args, always=False):
+    print(f"\033[1mOrble\033[0m · {title}", flush=True)
+    try:
+        code = subprocess.call([CLI, *args], env=dict(os.environ))
+    except OSError as e:
+        print(f"Could not run orble: {e}")
+        code = 127
+    hold(code, always)
+
+
+def exit_node(argv):
+    flags, boxes = [], []
+    for a in argv:
+        if a in ("--lan", "--fallback"):
+            if a in flags:
+                raise SystemExit(f"exit-node: {a} given twice")
+            flags.append(a)
+        else:
+            b = check_name(a)
+            if b in boxes:
+                raise SystemExit(f"exit-node: {b} given twice")
+            boxes.append(b)
+    if len(boxes) > 20:
+        raise SystemExit("exit-node: at most 20 boxes")
+    if not signed_in():
+        print("Not signed in to Orble", flush=True)
+        sys.exit(3)
+    sys.stdout.flush()
+    os.execve(CLI, [CLI, "exit-node", *flags, *boxes], ENV)
+
+
+# ---------- demo data (the panel's "Demo data" setting; for screenshots) ----------
+
+def demo_status():
+    def box(name, state, c, g, spent, active, flags=()):
+        return {"name": name, "state": state, "host": f"{name}.quiet-otter.orble.tech", "vcpus": c, "memGiB": g,
+                "spentUSD": spent, "active": active, "flags": list(flags)}
+
+    fp = lambda c: "SHA256:" + (c * 43)
+    print(json.dumps({
+        "ok": True, "error": "", "authError": False, "demo": True, "viewer": "xtigervncviewer",
+        "account": {"email": "you@example.com", "domain": "quiet-otter", "creditUSD": 7.42, "keys": 2},
+        "boxes": [
+            box("k7f2", "running", 2, 4, 0.0412, "now", ["desktop"]),
+            box("m3qa", "running", 2, 4, 0.0086, "2m ago"),
+            box("x9pd", "suspended", 2, 4, 0.1931, "3d ago"),
+        ],
+        "keys": [{"name": "laptop", "fingerprint": fp("A")}, {"name": "desktop", "fingerprint": fp("B")}],
+        "localKeys": [
+            {"file": "id_ed25519.pub", "fingerprint": fp("A"), "comment": "you@laptop", "type": "ED25519", "added": True},
+            {"file": "id_work.pub", "fingerprint": fp("C"), "comment": "you@work", "type": "ED25519", "added": False},
+        ],
+    }))
+
+
+def demo_exit_node(argv):
+    names = [a for a in argv if not a.startswith("--")] or ["k7f2"]
+    stop = []
+    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    print(f"Exit node connected from 203.0.113.7. {', '.join(names)} use this machine's network.", flush=True)
+    while not stop:
+        time.sleep(0.2)
+    print("Exit node off. The boxes are back on Orble's network.", flush=True)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(2)
+    cmd, rest = sys.argv[1], sys.argv[2:]
+    demo = rest[-1:] == ["--demo"]
+    if demo and cmd == "status":
+        demo_status()
+    elif demo and cmd == "exit-node":
+        demo_exit_node(rest[:-1])
+    elif cmd == "status":
+        status()
+    elif cmd == "action":
+        action(rest)
+    elif cmd == "exit-node":
+        exit_node(rest)
+    elif cmd == "ssh" and len(rest) == 1:
+        b = check_name(rest[0])
+        in_terminal(f"ssh {b} (a suspended box resumes)", ["ssh", b])
+    elif cmd == "desktop" and len(rest) == 1:
+        b = check_name(rest[0])
+        if not viewer():
+            print("No VNC viewer found. Install tigervnc (xtigervncviewer) or remmina, or use the browser desktop.")
+            hold(1)
+        in_terminal(f"desktop of {b} in a VNC viewer (close this window to end it)", ["desktop", b])
+    elif cmd == "topup" and len(rest) == 1:
+        d = check_dollars(rest[0])
+        in_terminal(f"add ${d} of credit", ["topup", d], always=True)
+    elif cmd == "login" and not rest:
+        in_terminal("sign in with Google", ["login"], always=True)
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

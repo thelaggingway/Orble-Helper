@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "id": "thelaggingway.orble-helper",
+  "name": "Orble Helper",
+  "version": "0.1.0",
+  "author": "thelaggingway",
+  "license": "MIT",
+  "description": "Orble sandboxes in the Omarchy bar: new boxes, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node, SSH keys, credit and top-ups, through the signed-in orble CLI.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Orble Helper",
+    "description": "Your Orble boxes with one-click SSH, suspend and resume, desktops, the exit node, SSH keys and credit.",
+    "category": "Development",
+    "aliases": [
+      "orble",
+      "sandbox",
+      "cloud",
+      "ssh",
+      "agents"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 120,
+      "showCount": true,
+      "showCredit": true,
+      "lowCreditUSD": 1,
+      "demoMode": false
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Background refresh (seconds)",
+        "description": "How often to check box states while the panel is closed. While it is open, or an action is running, it checks every 10 seconds.",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 120
+      },
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show running count on the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "showCredit",
+        "type": "boolean",
+        "label": "Show the credit card",
+        "description": "Your credit, account and box hostnames, with Add credit. Adds no extra request.",
+        "defaultValue": true
+      },
+      {
+        "key": "lowCreditUSD",
+        "type": "integer",
+        "label": "Low credit warning (dollars)",
+        "description": "Below this, the credit turns red and the bar icon is highlighted. 0 turns it off.",
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 1
+      },
+      {
+        "key": "demoMode",
+        "type": "boolean",
+        "label": "Demo data",
+        "description": "Show made-up boxes, keys and credit instead of your account, for screenshots. Actions do nothing while it is on.",
+        "defaultValue": false
+      }
+    ]
+  },
+  "homepage": "https://github.com/thelaggingway/Orble-Helper",
+  "repository": "https://github.com/thelaggingway/Orble-Helper"
+}
