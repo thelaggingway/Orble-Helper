@@ -4,6 +4,10 @@ An [Omarchy](https://omarchy.org/) bar plugin for [Orble](https://orble.tech), s
 
 It is a front end to the official `orble` CLI and uses the CLI's own sign-in. The plugin stores no token or password.
 
+![The Orble Helper panel, showing made-up demo data](preview.png)
+
+*The panel with **Demo data** on (made-up boxes, keys and credit), one box expanded and the exit node running.*
+
 ## What it does
 
 **Bar icon.** A server icon that lights up while any box is running, with the count beside it, and a globe while the exit node is on. It is highlighted when you're signed out or your credit is low. Left-click opens the panel and right-click refreshes.

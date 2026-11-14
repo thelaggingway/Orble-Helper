@@ -420,11 +420,12 @@ def demo_status():
 
 
 def demo_exit_node(argv):
-    names = [a for a in argv if not a.startswith("--")] or ["k7f2"]
+    names = [a for a in argv if not a.startswith("--")]
     stop = []
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
-    print(f"Exit node connected from 203.0.113.7. {', '.join(names)} use this machine's network.", flush=True)
+    who = ", ".join(names) if names else "The boxes switched on in the dashboard"
+    print(f"Exit node connected from 203.0.113.7. {who} now use this machine's network.", flush=True)
     while not stop:
         time.sleep(0.2)
     print("Exit node off. The boxes are back on Orble's network.", flush=True)
