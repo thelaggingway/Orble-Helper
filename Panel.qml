@@ -59,6 +59,11 @@ Panel {
   readonly property bool exitOn: exitProc.running
   readonly property var exitOpts: ({ boxes: exitBoxes, lan: exitLan, fallback: exitFallback })
 
+  // Keep awake: one helper process holds an idle `orble ssh` per box, so it doesn't auto-suspend.
+  property var awakeBoxes: []
+  property string awakeKey: ""   // the box list the running helper was started with
+  property string awakeLine: ""
+
   readonly property int running: Model.runningCount(status)
   readonly property bool healthy: status !== null && status.ok === true
   readonly property var boxes: healthy ? status.boxes : []
@@ -94,6 +99,8 @@ Panel {
     var names = next.boxes.map(function(b) { return b.name })
     var kept = root.exitBoxes.filter(function(n) { return names.indexOf(n) >= 0 })
     if (kept.length !== root.exitBoxes.length && !root.exitOn) root.exitBoxes = kept
+    var awake = root.awakeBoxes.filter(function(n) { return names.indexOf(n) >= 0 })
+    if (awake.length !== root.awakeBoxes.length) setAwake(awake)
   }
 
   // ---------- actions ----------
@@ -142,6 +149,8 @@ Panel {
       root.confirm = { verb: verb, target: target, args: a, extra: extra || "" }
       Qt.callLater(function() { confirmKeys.forceActiveFocus() })
     } else {
+      // Keep awake would reconnect and resume a box you just suspended, so suspending ends it.
+      if (verb === "suspend" && isAwake(target)) setAwake(Model.toggled(root.awakeBoxes, target))
       runAction(verb, a)
     }
   }
@@ -205,7 +214,30 @@ Panel {
 
   function toggleExit() { root.exitOn ? stopExit() : startExit() }
 
-  onDemoChanged: { stopExit(); root.status = null; refresh() }
+  // ----- keep awake -----
+
+  function isAwake(name) { return root.awakeBoxes.indexOf(name) >= 0 }
+
+  function setAwake(list) {
+    root.awakeBoxes = list.filter(function(n) { return Model.validName(n) })
+    applyAwake()
+  }
+
+  function toggleAwake(name) { setAwake(Model.toggled(root.awakeBoxes, name)) }
+
+  // Restart the helper whenever the list changes; onExited starts it again with the new list.
+  function applyAwake() {
+    if (awakeProc.running) {
+      if (JSON.stringify(root.awakeBoxes) !== root.awakeKey) { awakeProc.signal(15); awakeKill.restart() }
+      return
+    }
+    if (root.awakeBoxes.length === 0) { root.awakeLine = ""; return }
+    root.awakeKey = JSON.stringify(root.awakeBoxes)
+    awakeProc.command = [root.helper, "keep-awake"].concat(root.awakeBoxes).concat(root.demoArg)
+    awakeProc.running = true
+  }
+
+  onDemoChanged: { stopExit(); setAwake([]); root.status = null; refresh() }
 
   onOpenedChanged: {
     if (!opened) {
@@ -246,6 +278,24 @@ Panel {
       root.refresh()
     }
   }
+
+  Process {
+    id: awakeProc
+    stdout: SplitParser { onRead: function(data) { var l = Model.cleanLine(data); if (l) root.awakeLine = l } }
+    onExited: function(exitCode) {
+      awakeKill.stop()
+      var wanted = JSON.stringify(root.awakeBoxes)
+      if (wanted !== root.awakeKey) { root.awakeKey = ""; applyAwake(); return }
+      // It stopped by itself (signed out, bad name): don't loop, show why.
+      root.awakeKey = ""
+      if (root.awakeBoxes.length > 0) {
+        root.awakeBoxes = []
+        if (root.awakeLine === "" || root.awakeLine.indexOf("Keeping") === 0) root.awakeLine = "Keep awake stopped (exit " + exitCode + ")"
+      }
+    }
+  }
+
+  Timer { id: awakeKill; interval: 8000; onTriggered: if (awakeProc.running) awakeProc.running = false }
 
   // If the CLI ignores SIGINT for 10 s, end it.
   Timer { id: exitKill; interval: 10000; onTriggered: if (exitProc.running) exitProc.running = false }
@@ -458,6 +508,16 @@ Panel {
           Repeater {
             model: root.boxes
             delegate: BoxRow {}
+          }
+
+          // Keep awake's last word when it reconnects or stops by itself.
+          PlainText {
+            visible: root.healthy && root.awakeLine !== "" && root.awakeLine.indexOf("Keeping") !== 0
+            width: parent.width
+            text: Model.icons.coffee + "  " + root.awakeLine
+            color: root.muted
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
           }
 
           PanelSeparator { visible: root.healthy; foreground: root.foreground }
@@ -876,7 +936,9 @@ Panel {
 
           PlainText {
             width: parent.width
-            text: brow.b.name + (root.exitOn && root.exitBoxes.indexOf(brow.b.name) >= 0 ? "  " + Model.icons.earth : "")
+            text: brow.b.name
+                  + (root.isAwake(brow.b.name) ? "  " + Model.icons.coffee : "")
+                  + (root.exitOn && root.exitBoxes.indexOf(brow.b.name) >= 0 ? "  " + Model.icons.earth : "")
             font.bold: true
           }
 
@@ -938,7 +1000,7 @@ Panel {
       PlainText {
         visible: text !== ""
         width: parent.innerWidth
-        text: Model.detailLine(brow.b)
+        text: Model.detailLine(brow.b, root.isAwake(brow.b.name))
         color: root.muted
         font.pixelSize: Style.font.caption
       }
@@ -953,6 +1015,13 @@ Panel {
           iconText: Model.icons.copy; text: "Copy SSH"
           tooltipText: "Copy \"" + Model.sshCommand(brow.b) + "\""
           onClicked: root.copySsh(brow.b)
+        }
+        ActionButton {
+          readonly property bool on: root.isAwake(brow.b.name)
+          iconText: Model.icons.coffee; text: on ? "Let it sleep" : "Keep awake"
+          tooltipText: on ? "Stop holding a session open; it auto-suspends a minute later"
+                          : "Hold an idle SSH session open so it doesn't auto-suspend (while this machine is on)"
+          onClicked: root.toggleAwake(brow.b.name)
         }
         ActionButton {
           iconText: Model.icons.monitor; text: "Desktop"

@@ -54,6 +54,8 @@ t("formatting", () => {
   assert.equal(M.subline(b, ""), "Suspended · 2 vCPU · 4 GB · $0.0031 spent")
   assert.equal(M.subline(b, "resume"), "Resuming… · 2 vCPU · 4 GB · $0.0031 spent")
   assert.equal(M.detailLine(b), "active 30h ago · desktop on")
+  assert.equal(M.detailLine(b, true), "active 30h ago · desktop on · kept awake")
+  assert.equal(M.detailLine({ flags: [] }, true), "kept awake")
   assert.equal(M.sshCommand(b), "orble ssh rku7")
   assert.equal(M.sshCommand({ name: "x", host: "" }), "orble ssh x")
   assert.equal(M.sshCommand({ name: "--help", host: "h" }), "")

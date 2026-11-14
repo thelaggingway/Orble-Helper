@@ -22,7 +22,8 @@ var icons = {
   key: glyph(0xF0306),
   monitor: glyph(0xF0379),
   update: glyph(0xF06B0),
-  login: glyph(0xF0342)
+  login: glyph(0xF0342),
+  coffee: glyph(0xF0176)
 }
 
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
@@ -102,11 +103,12 @@ function subline(b, verb) {
   return parts.join(" · ")
 }
 
-function detailLine(b) {
+function detailLine(b, awake) {
   var parts = []
   if (b.active) parts.push("active " + b.active)
   if (hasDesktop(b)) parts.push("desktop on")
   flagsOf(b).forEach(function(f) { if (f !== "desktop") parts.push(f) })
+  if (awake) parts.push("kept awake")
   return parts.join(" · ")
 }
 

@@ -10,7 +10,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home/.ssh" "$T/config/orble"
 LOG="$T/calls.log"
 NOTES="$T/notes.log"
-export FAKE_LOG="$LOG" FAKE_NOTES="$NOTES" FAKE_MODE=ok HOME="$T/home" XDG_CONFIG_HOME="$T/config"
+export FAKE_PIDS="$T/ssh.pids" FAKE_LOG="$LOG" FAKE_NOTES="$NOTES" FAKE_MODE=ok HOME="$T/home" XDG_CONFIG_HOME="$T/config"
 echo '{"api":"https://orble.tech","token":"fake-token","domain":"zippy-summit"}' > "$T/config/orble/config.json"
 
 # Two local keys: one already on the account (the fake prints its fingerprint), one not.
@@ -40,6 +40,8 @@ case "$*" in
   new) echo "✓ k9zz ready in 0.21s" ;;
   update) echo "✓ Orble is up to date 515f19f2" ;;
   rm\ broken*) echo "orble: no such box" >&2; exit 1 ;;
+  ssh\ *--\ sleep\ infinity) [[ -n ${FAKE_SSH_DROP:-} ]] && { echo "Connection closed by remote host" >&2; exit 255; }
+    echo $$ >> "$FAKE_PIDS"; exec sleep 30 ;;
   *) exit 0 ;;
 esac
 EOF
@@ -189,6 +191,39 @@ ok
 [[ $(cat "$LOG") == $'exit-node --lan --fallback rku7 k7f2\nexit-node' ]] || { cat "$LOG"; fail "exit-node argv"; }
 ok
 
+# --- keep-awake: one idle orble ssh per box, ended by SIGTERM ---
+refuse keep-awake
+refuse keep-awake rku7 rku7
+refuse keep-awake --help
+refuse keep-awake 'x$(id)'
+: > "$LOG"
+"$HELPER" keep-awake rku7 k7f2 > "$T/awake.out" & pid=$!
+sleep 1.5; kill -TERM $pid; wait $pid || fail "keep-awake exit code"
+want='-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o BatchMode=yes -- sleep infinity'
+[[ $(sort "$LOG") == "ssh k7f2 $want"$'\n'"ssh rku7 $want" ]] || { cat "$LOG"; fail "keep-awake argv"; }
+grep -q "Keeping rku7, k7f2 awake" "$T/awake.out" && grep -q "Stopped" "$T/awake.out" || { cat "$T/awake.out"; fail "keep-awake output"; }
+for p in $(cat "$T/ssh.pids"); do ! kill -0 "$p" 2>/dev/null || fail "keep-awake left session $p running"; done
+ok
+
+# --- keep-awake reconnects a dropped session ---
+: > "$LOG"
+FAKE_SSH_DROP=1 ORBLE_PANEL_RETRY_SEC=1 "$HELPER" keep-awake rku7 > "$T/awake.out" & pid=$!
+sleep 2.8; kill -TERM $pid; wait $pid || true
+(( $(grep -c '^ssh rku7' "$LOG") >= 2 )) || { cat "$LOG"; fail "keep-awake did not reconnect"; }
+grep -q "session ended (Connection closed by remote host)" "$T/awake.out" || { cat "$T/awake.out"; fail "keep-awake drop message"; }
+ok
+
+# --- keep-awake stops at a sign-in prompt, and never starts signed out ---
+: > "$LOG"; : > "$NOTES"
+set +e; FAKE_MODE=auth timeout 10 "$HELPER" keep-awake rku7 > "$T/awake.out"; code=$?; set -e
+[[ $code == 3 ]] || fail "keep-awake at a sign-in prompt exited $code"
+grep -q "keep awake stopped" "$NOTES" || fail "keep-awake sign-in notification"
+mv "$T/config/orble/config.json" "$T/config.json"; : > "$LOG"
+set +e; "$HELPER" keep-awake rku7 > /dev/null; code=$?; set -e
+mv "$T/config.json" "$T/config/orble/config.json"
+[[ $code == 3 && ! -s $LOG ]] || fail "keep-awake signed out: exit $code, calls: $(cat "$LOG")"
+ok
+
 # --- demo data: valid shapes, and the CLI is never called ---
 : > "$LOG"
 out=$("$HELPER" status --demo)
@@ -196,6 +231,9 @@ python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] and d[
 "$HELPER" exit-node k7f2 --demo > "$T/exit.out" & pid=$!
 sleep 0.5; kill -INT $pid; wait $pid
 grep -q "connected" "$T/exit.out" && grep -q "off" "$T/exit.out" || fail "demo exit node"
+"$HELPER" keep-awake k7f2 --demo > "$T/awake.out" & pid=$!
+sleep 0.5; kill -TERM $pid; wait $pid
+grep -q "Keeping k7f2 awake" "$T/awake.out" && grep -q "Stopped" "$T/awake.out" || fail "demo keep awake"
 [[ ! -s $LOG ]] || fail "demo mode called the CLI: $(cat "$LOG")"
 ok
 

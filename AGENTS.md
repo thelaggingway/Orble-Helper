@@ -9,7 +9,7 @@ Guide for coding agents (and people) changing this plugin. Read [README.md](READ
 | `manifest.json` | Omarchy manifest: id `thelaggingway.orble-helper`, `bar-widget`, settings schema. |
 | `Panel.qml` | Bar icon + `KeyboardPanel`: state, polling, action dispatch, confirm dialog, terminal launches, the exit-node `Process`. Inline components: `PlainText`, `StateDot`, `ActionButton`, `Chips`, `CreditCard`, `ExitNodeCard`, `BoxRow`, `KeyRow`, `LocalKeyRow`. |
 | `Model.js` | `.pragma library` pure helpers, run under Node in tests. |
-| `bin/orble-panel` | Python 3 stdlib, `python3 -I`. `status`, `action <verb>`, `exit-node`, and the terminal commands `ssh`, `desktop`, `topup`, `login`. The only code that runs `orble`. |
+| `bin/orble-panel` | Python 3 stdlib, `python3 -I`. `status`, `action <verb>`, `exit-node`, `keep-awake`, and the terminal commands `ssh`, `desktop`, `topup`, `login`. The only code that runs `orble`. |
 | `tests/` | `run.sh` → `source-test.sh` (static rules), `helper-test.sh` (fake `orble` on PATH, fake `~/.ssh` and config), `model-test.mjs`. `marketplace-scan.mjs` runs the Omarchy marketplace's security baseline (CI clones the marketplace). |
 
 ## Run, reload, test
@@ -38,8 +38,9 @@ To check the expanded box or the keys list, temporarily set the `expandedBox` / 
 7. **Money is visible and confirmed.** `topup` is in `confirmVerbs` and runs only via `openTerminal`, never as a background action.
 8. **The exit node stops like Ctrl-C**: `exitProc.signal(2)`, with a 10 s fallback. The helper `execve`s the CLI so the signal reaches it directly.
 9. **QML list wrappers**: status arrays stored in a `property var` fail `Array.isArray`; read them by index (`flagsOf`) or with `filter`/`map`.
-10. **Demo mode** guards `runAction` and `openTerminal`; the exit node runs the helper's fake `exit-node --demo`.
-11. No caches, state files or secrets.
+10. **Keep awake** is one long-running `keep-awake <box>...` helper owned by `awakeProc`; changing the list restarts it (SIGTERM, then `onExited` starts the new list). It never loops on its own failures, stops at a sign-in prompt (exit 3), and suspending a box from the panel drops that box first, or the reconnect would resume it.
+11. **Demo mode** guards `runAction` and `openTerminal`; the exit node runs the helper's fake `exit-node --demo`.
+12. No caches, state files or secrets.
 
 ## CLI facts this depends on
 
