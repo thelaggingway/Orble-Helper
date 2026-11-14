@@ -53,7 +53,7 @@ Checked against the `orble` CLI of 2026-11-14 (`orble update` reported `515f19f2
 - `suspend|resume|vnc <box>`, `rm <box> [-y]`, `desktop <box> [--off]` (viewer: `xtigervncviewer` or `remmina`, tunnel on 127.0.0.1:5901).
 - `exit-node [--lan] [--fallback] [box...]` runs until Ctrl-C.
 - `topup [dollars]` (10–500), `login` (Google, device code), `update`, hidden `__boxes`, `completion bash|zsh|fish`.
-- Idle boxes suspend on their own ("Automatic suspend" on orble.tech) and SSH resumes them; the idle timeout is undocumented and the CLI has no setting for it.
+- Auto-suspend (measured 2026-11-14): a box suspends about 1 minute after its last SSH connection closes. An open SSH session or an open desktop viewer keeps it awake; running processes do not (a tmux job froze while suspended and carried on after resume, so processes survive but nothing runs). `ls` ACTIVE is the time since the last connection started. Boxes can be pinned awake in the dashboard only; the CLI has no pin.
 - Config: `$XDG_CONFIG_HOME/orble/config.json` with `api`, `token`, `domain`.
 
 ## Releasing
