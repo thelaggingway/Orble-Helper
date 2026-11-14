@@ -118,6 +118,15 @@ Panel.qml ──argv──▶ bin/orble-panel ──argv──▶ orble CLI ─�
 | No VNC viewer button | Install `tigervnc` or `remmina`, or use **Desktop** (browser). |
 | Shell log | `journalctl --user -f -o cat \| grep -i orble` |
 
+## Update and uninstall
+
+```bash
+omarchy plugin update thelaggingway.orble-helper && omarchy restart shell
+omarchy plugin remove thelaggingway.orble-helper
+```
+
+Removing the plugin stops the exit node if it is running (it lives in the shell). The `orble` CLI, its sign-in and your boxes are untouched; remove those with the CLI (`orble rm <box>`) or the Orble dashboard.
+
 ## Development
 
 ```bash
