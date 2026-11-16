@@ -6,7 +6,7 @@ It is a front end to the official `orble` CLI and uses the CLI's own sign-in. Th
 
 ![The Orble Helper panel, showing made-up demo data](preview.png)
 
-*The panel with **Demo data** on (made-up boxes, keys and credit), one box expanded and the exit node running. Taken before snapshots and ports were added.*
+*The panel with **Demo data** on (made-up boxes, snapshots, keys and credit): one box expanded with its snapshot row and a shared port, and a snapshot offering the sizes for a new box.*
 
 ## What it does
 
