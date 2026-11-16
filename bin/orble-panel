@@ -171,6 +171,104 @@ def parse_boxes(text):
     return boxes
 
 
+SIZE_CLASS = {(2, 4): "s", (4, 8): "m", (8, 16): "l"}
+
+
+def since(iso, now=None):
+    """'now', '12m ago', '3h ago', '2d ago' from an RFC 3339 time, like the ls table's ACTIVE."""
+    try:
+        from datetime import datetime, timezone
+        then = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        d = int(((now or datetime.now(timezone.utc)) - then).total_seconds())
+    except (TypeError, ValueError):
+        return ""
+    if d < 60:
+        return "now"
+    if d < 3600:
+        return f"{d // 60}m ago"
+    if d < 86400:
+        return f"{d // 3600}h ago"
+    return f"{d // 86400}d ago"
+
+
+def fork_parent(b):
+    """The box this one was forked from. `ls --json` hasn't been seen with a fork yet,
+    so accept the likely field names and keep only a valid box name."""
+    for k in ("forked_from", "forkedFrom", "parent", "fork_of"):
+        v = b.get(k)
+        if isinstance(v, dict):
+            v = v.get("name")
+        if isinstance(v, str) and NAME_RE.match(v):
+            return v
+    return ""
+
+
+def parse_boxes_json(text):
+    """`orble ls --json` (a list of boxes), or None when it isn't that."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(data, dict):
+        data = data.get("boxes")
+    if not isinstance(data, list):
+        return None
+    boxes = []
+    for b in data[:100]:
+        if not isinstance(b, dict) or not NAME_RE.match(str(b.get("name") or "")):
+            continue
+        state = str(b.get("state") or "").lower()
+        host = str(b.get("hostname") or "")
+        try:
+            vcpus = int(b.get("vcpus") or 0)
+            mem = int(b.get("mem_mib") or 0) // 1024
+            disk = int(b.get("disk_gib") or 0)
+            spent = round(int(b.get("spent_micros") or 0) / 1e6, 6)
+        except (TypeError, ValueError):
+            vcpus = mem = disk = 0
+            spent = 0.0
+        boxes.append({
+            "name": b["name"],
+            "state": s(state, 32) if re.fullmatch(r"[a-z][a-z -]*", state) else "unknown",
+            "host": host if HOST_RE.match(host) else "",
+            "size": SIZE_CLASS.get((vcpus, mem), ""),
+            "vcpus": vcpus,
+            "memGiB": mem,
+            "diskGiB": disk,
+            "spentUSD": spent,
+            "active": since(b.get("last_active_at")) if b.get("last_active_at") else "",
+            "flags": ["desktop"] if b.get("desktop") is True else [],
+            "forkedFrom": fork_parent(b),
+        })
+    return fork_order(boxes)
+
+
+def fork_order(boxes):
+    """Each fork right after the box it came from (as `orble ls` shows them), else CLI order."""
+    names = {b["name"] for b in boxes}
+    kids = {}
+    for b in boxes:
+        if b["forkedFrom"] in names and b["forkedFrom"] != b["name"]:
+            kids.setdefault(b["forkedFrom"], []).append(b)
+    out, seen = [], set()
+
+    def add(b, depth):
+        if b["name"] in seen:
+            return
+        seen.add(b["name"])
+        b["depth"] = min(depth, 3)
+        out.append(b)
+        for k in kids.get(b["name"], []):
+            add(k, depth + 1)
+
+    for b in boxes:
+        if b["forkedFrom"] not in names or b["forkedFrom"] == b["name"]:
+            add(b, 0)
+    for b in boxes:  # anything left (a fork cycle) goes last
+        add(b, 0)
+    return out
+
+
 def parse_account(text):
     lines = [l for l in clean(text).splitlines() if l.strip()]
     acct = {"email": "", "domain": "", "creditUSD": None, "keys": 0}
@@ -236,7 +334,7 @@ def status():
         print(json.dumps(out))
         return
     with ThreadPoolExecutor(3) as ex:
-        futures = {k: ex.submit(cli, v, 30) for k, v in {"ls": ["ls"], "account": ["account"], "keys": ["keys"]}.items()}
+        futures = {k: ex.submit(cli, v, 30) for k, v in {"ls": ["ls", "--json"], "account": ["account"], "keys": ["keys"]}.items()}
         res = {k: f.result() for k, f in futures.items()}
 
     code, text, err = res["ls"]
@@ -244,7 +342,16 @@ def status():
         out.update(ok=False, authError=code == 3, error=(last_lines(err, text) or f"exit {code}")[:300])
         print(json.dumps(out))
         return
-    out["boxes"] = parse_boxes(text)
+    boxes = parse_boxes_json(text)
+    if boxes is None:
+        # A CLI from before `ls --json` (or one that changed it): read the table instead.
+        code, text, err = cli(["ls"], 30)
+        if code != 0:
+            out.update(ok=False, authError=code == 3, error=(last_lines(err, text) or f"exit {code}")[:300])
+            print(json.dumps(out))
+            return
+        boxes = parse_boxes(text)
+    out["boxes"] = boxes
     code, text, _ = res["account"]
     if code == 0:
         out["account"] = parse_account(text)

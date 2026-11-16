@@ -106,6 +106,8 @@ function subline(b, verb) {
 
 function detailLine(b, awake) {
   var parts = []
+  if (b.forkedFrom) parts.push("fork of " + b.forkedFrom)
+  if (b.diskGiB) parts.push(b.diskGiB + " GB disk")
   if (b.active) parts.push("active " + b.active)
   if (hasDesktop(b)) parts.push("desktop on")
   flagsOf(b).forEach(function(f) { if (f !== "desktop") parts.push(f) })
@@ -146,14 +148,35 @@ function creditLow(account, threshold) {
   return account.creditUSD < (Number(threshold) || 0)
 }
 
-// orble new -s: s 2 vCPU 4 GiB (the CLI's default), m 4/8, l 8/16.
+// orble new -s: s 2 vCPU 4 GiB (the CLI's default), m 4/8, l 8/16. Prices from
+// orble.tech/pricing (2026-11-16): per second while running, nothing while suspended.
 var sizeOptions = [
-  { value: "s", label: "S · 2/4" }, { value: "m", label: "M · 4/8" }, { value: "l", label: "L · 8/16" }
+  { value: "s", label: "S · 2/4", hourUSD: 0.015 },
+  { value: "m", label: "M · 4/8", hourUSD: 0.03 },
+  { value: "l", label: "L · 8/16", hourUSD: 0.06 }
 ]
 
+function sizeOption(v) {
+  for (var i = 0; i < sizeOptions.length; i++) if (sizeOptions[i].value === v) return sizeOptions[i]
+  return null
+}
+
+// "Create M box" for the button; the tooltip has the price.
+function createLabel(v) {
+  var o = sizeOption(v)
+  return o ? "Create " + o.value.toUpperCase() + " box" : "Create"
+}
+
+function sizeTooltip(v) {
+  var o = sizeOption(v)
+  if (!o) return "orble new"
+  var p = o.label.split(" · ")[1].split("/")
+  return "orble new -s " + o.value + ": " + p[0] + " vCPU, " + p[1] + " GiB, 64 GiB disk · $" + o.hourUSD + "/h while running, $0 suspended"
+}
+
 function sizeLabel(v) {
-  for (var i = 0; i < sizeOptions.length; i++) if (sizeOptions[i].value === v) return sizeOptions[i].label
-  return ""
+  var o = sizeOption(v)
+  return o ? o.label : ""
 }
 
 var topupOptions = [
@@ -165,7 +188,7 @@ function confirmText(verb, target, extra) {
   switch (verb) {
   case "rm": return "Delete box " + target + "? Its disk and everything on it are gone for good."
   case "keys-rm": return "Remove SSH key " + target + " from your Orble account? New boxes won't accept it."
-  case "fork": return "Fork " + target + " into a new box? It carries on from " + target + "'s disk and is billed like any box."
+  case "fork": return "Fork " + target + " into a new box? It carries on from " + target + ", running programs included, and is billed like any box."
   case "topup": return "Add " + target + " of Orble credit? orble topup opens in a terminal; follow it there to pay."
   default: return verb + " " + target + "?"
   }

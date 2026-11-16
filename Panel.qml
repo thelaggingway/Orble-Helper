@@ -496,8 +496,9 @@ Panel {
             ActionButton {
               anchors.verticalCenter: parent.verticalCenter
               iconText: Model.icons.plus
-              text: "Create"
-              tooltipText: "orble new -s " + root.newSize + " (vCPU / GiB)"
+              foreground: root.accent
+              text: Model.createLabel(root.newSize)
+              tooltipText: Model.sizeTooltip(root.newSize)
               onClicked: root.newBox(root.newSize)
             }
           }
@@ -940,7 +941,8 @@ Panel {
         id: head
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.leftMargin: Style.space(6)
+        // Forks sit under the box they came from, like `orble ls`.
+        anchors.leftMargin: Style.space(6) + (brow.b.depth || 0) * Style.space(14)
         anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
         implicitHeight: Math.max(labels.implicitHeight, sshButton.implicitHeight)

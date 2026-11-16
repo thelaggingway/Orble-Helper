@@ -44,18 +44,21 @@ To check the expanded box or the keys list, temporarily set the `expandedBox` / 
 
 ## CLI facts this depends on
 
-Checked against the `orble` CLI of 2026-11-16 (`adcd323c`; first written against `515f19f2`). No `--json` anywhere; confirm table layouts after CLI updates.
+Checked against the `orble` CLI of 2026-11-16 (`adcd323c`; first written against `515f19f2`). `ls --json` exists (since about `adcd323c`; listed on orble.tech/docs); `account` and `keys` have no JSON, so confirm their layouts after CLI updates.
 
-- `ls`: `NAME  STATE  HOST  SIZE  SPENT  ACTIVE` then unlabeled extra words (`desktop` while the desktop runs). STATE is a glyph + word (`◐ suspended`, `● running`). SIZE `s 2c/4g` (size class s|m|l, then vCPUs/GiB; before `adcd323c` just `2c/4g`, still parsed). Columns are aligned by rune. No boxes: `No boxes yet. Create one: orble new`.
+- `ls --json` (what `status` uses): a list of `{name, hostname, state, desktop, vcpus, mem_mib, disk_gib, ipv6, host_key, spent_micros, created_at, last_active_at}`. The helper passes on only what the panel shows (never `ipv6`/`host_key`), derives the size class from vCPU/memory, and `ACTIVE`-style text from `last_active_at`. A fork's parent field hasn't been seen yet (no forks on the account); `fork_parent()` accepts `forked_from`, `forkedFrom`, `parent`, `fork_of` (string or `{name}`), and `fork_order()` puts forks after their parent with a `depth` the panel indents by. If `ls --json` doesn't give a list, the helper falls back to the table below.
+- `ls` (table fallback): `NAME  STATE  HOST  SIZE  SPENT  ACTIVE` then unlabeled extra words (`desktop` while the desktop runs). STATE is a glyph + word (`◐ suspended`, `● running`). SIZE `s 2c/4g` (size class s|m|l, then vCPUs/GiB; before `adcd323c` just `2c/4g`, still parsed). Columns are aligned by rune. No boxes: `No boxes yet. Create one: orble new`.
 - `account`: email line, then `  boxes   <box>.<slug>.orble.tech`, `  credit  $5.00`, `  keys    1`.
 - `keys`: `<name>  SHA256:<43 chars>` per line. `keys add [file]` prompts for a path without one. `keys rm <fingerprint>`.
 - Box hosts resolve to IPv6 only: plain `ssh <host>` fails on IPv4-only networks ("Network is unreachable"), while `orble ssh <box> [-- cmd]` routes the connection itself. Copy SSH therefore copies `orble ssh <box>`.
 - `new [-s s|m|l] [--ssh]` prints `✓ <name> ready in 0.16s`. Sizes: s 2 vCPU 4 GiB (default), m 4/8, l 8/16. No name or template options.
-- `fork <box> [-n N]` (1–10): new boxes carrying on from this one. Output not yet seen live; the helper collects every `<name> ready` it prints. Like `new`, it may offer a top-up at zero credit, so it gets the same credit check.
+- `fork <box> [-n N]` (1–10): new boxes carrying on from this one. Output not yet seen live; the helper collects every `<name> ready` it prints. Per the docs, a fork carries running programs over too. Like `new`, it may offer a top-up at zero credit, so it gets the same credit check.
 - `suspend|resume|vnc <box>`, `rm <box> [-y]`, `desktop <box> [--off]` (viewer: `xtigervncviewer` or `remmina`, tunnel on 127.0.0.1:5901).
 - `exit-node [--lan] [--fallback] [box...]` runs until Ctrl-C.
 - `topup [dollars]` (10–500), `login` (Google or GitHub, device code), `update`, hidden `__boxes`, `completion bash|zsh|fish`.
 - Auto-suspend (measured 2026-11-14): a box suspends about 1 minute after its last SSH connection closes. An open SSH session or an open desktop viewer keeps it awake; running processes do not (a tmux job froze while suspended and carried on after resume, so processes survive but nothing runs). `ls` ACTIVE is the time since the last connection started. Boxes can be pinned awake in the dashboard only; the CLI has no pin.
+- Prices (orble.tech/pricing, 2026-11-16): S $0.015/h, M $0.03/h, L $0.06/h while running, all 64 GiB disk; suspended $0; storage $0.05/GiB-month. They live in `Model.sizeOptions`; update them if the pricing page changes.
+- Orble also runs an MCP server (`https://orble.tech/mcp`); the plugin doesn't use it.
 - Config: `$XDG_CONFIG_HOME/orble/config.json` with `api`, `token`, `domain`.
 
 ## Releasing

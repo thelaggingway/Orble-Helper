@@ -14,7 +14,7 @@ It is a front end to the official `orble` CLI and uses the CLI's own sign-in. Th
 
 **Credit.** Your credit, account and box hostname pattern (`<box>.<account>.orble.tech`). **Add credit** offers $10, $25, $50 or $100; after you confirm, `orble topup <amount>` runs in a terminal, where you finish paying the way the CLI asks. The plugin never pays anything itself.
 
-**New box (+).** Pick a size (S 2 vCPU / 4 GiB, M 4/8, L 8/16) and Create: runs `orble new -s <size>`. The notification names the box and how fast it started. With no credit, the panel refuses rather than letting `orble new` prompt for a top-up in the background.
+**New box (+).** Pick a size (S 2 vCPU / 4 GiB, M 4/8, L 8/16; $0.015, $0.03 or $0.06 an hour while running, nothing while suspended), then **Create S/M/L box**: runs `orble new -s <size>`. To wake an existing box, use ▶ on its row. The notification names the box and how fast it started. With no credit, the panel refuses rather than letting `orble new` prompt for a top-up in the background.
 
 **Boxes.** Every box shows its state, size and spend, with two buttons:
 
@@ -32,7 +32,7 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 | Desktop | `orble vnc <box>`: the desktop in your browser, started if needed | No |
 | VNC viewer | `orble desktop <box>` in a terminal (shown only when `xtigervncviewer` or `remmina` is installed) | No |
 | Desktop off | `orble desktop <box> --off` (shown while the desktop runs) | No |
-| Fork | `orble fork <box> -n 1` (a new box carrying on from this one) | Yes |
+| Fork | `orble fork <box> -n 1` (a new box carrying on from this one, running programs included; forks are listed indented under their box) | Yes |
 | Delete | `orble rm <box> -y` | Yes |
 
 **Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** holds one idle `orble ssh <box> -- sleep infinity` session open per box, reconnecting if it drops (connecting also resumes a suspended box), and shows a coffee cup next to the box. It works only while this machine is on and the shell runs; suspending the box from the panel turns it off. For a box that should stay up while your laptop sleeps, pin it in the Orble dashboard; the CLI has no pin command yet.

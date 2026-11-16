@@ -27,6 +27,13 @@ if [[ $FAKE_MODE == auth ]]; then
   echo "Not signed in yet. Signing in first."; echo "Opening https://orble.tech/cli?code=AAAA-BBBB"; sleep 30; exit 0
 fi
 case "$*" in
+  ls\ --json) [[ -n ${FAKE_JSON:-} ]] || exit 0
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '%s' '[{"name":"base1","hostname":"base1.zippy-summit.orble.tech","state":"running","desktop":true,"vcpus":4,"mem_mib":8192,"disk_gib":64,"spent_micros":1250000,"last_active_at":"'"$now"'"},
+      {"name":"other","hostname":"evil.example.com","state":"suspended","desktop":false,"vcpus":"x","mem_mib":4096,"spent_micros":0,"last_active_at":"2020-01-01T00:00:00Z"},
+      {"name":"kid2","hostname":"kid2.zippy-summit.orble.tech","state":"running","vcpus":2,"mem_mib":4096,"forked_from":"kid1"},
+      {"name":"-rf","hostname":"x.zippy-summit.orble.tech","state":"running"},
+      {"name":"kid1","hostname":"kid1.zippy-summit.orble.tech","state":"Running!","vcpus":8,"mem_mib":16384,"forked_from":{"name":"base1"}}]' ;;
   ls) [[ -n ${FAKE_EMPTY:-} ]] && { echo "No boxes yet. Create one: orble new"; exit 0; }
     printf '%s\n' \
     'NAME     STATE          HOST                             SIZE     SPENT    ACTIVE   ' \
@@ -80,6 +87,23 @@ assert sorted(lk) == ["id_new.pub", "id_on.pub"], sorted(lk)
 assert lk["id_on.pub"]["added"] is True and lk["id_new.pub"]["added"] is False
 assert lk["id_new.pub"]["comment"] == "new@laptop" and lk["id_new.pub"]["type"] == "ED25519"
 assert d["viewer"] in ("", "xtigervncviewer", "remmina")
+EOF
+ok
+
+# --- status from ls --json: fields, fork order, unsafe values dropped ---
+out=$(FAKE_JSON=1 "$HELPER" status)
+python3 -I - "$out" <<'EOF' || fail "json status"
+import json, sys
+d = json.loads(sys.argv[1])
+b = d["boxes"]
+assert [x["name"] for x in b] == ["base1", "kid1", "kid2", "other"], [x["name"] for x in b]
+assert [x["depth"] for x in b] == [0, 1, 2, 0], b
+x = b[0]
+assert (x["size"], x["vcpus"], x["memGiB"], x["diskGiB"], x["spentUSD"], x["active"], x["flags"]) == ("m", 4, 8, 64, 1.25, "now", ["desktop"]), x
+assert b[1]["forkedFrom"] == "base1" and b[1]["size"] == "l" and b[1]["state"] == "unknown"
+assert b[2]["forkedFrom"] == "kid1" and b[2]["size"] == "s"
+o = b[3]
+assert o["host"] == "" and o["vcpus"] == 0 and o["size"] == "" and o["active"].endswith("d ago") and o["flags"] == []
 EOF
 ok
 

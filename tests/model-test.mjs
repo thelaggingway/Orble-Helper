@@ -6,7 +6,7 @@ import vm from "node:vm"
 
 const src = readFileSync(fileURLToPath(new URL("../Model.js", import.meta.url)), "utf8").replace(/^\.pragma library\s*$/m, "")
 const M = {}
-vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
+vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
 
 let n = 0
 const t = (name, fn) => { fn(); n++ }
@@ -91,6 +91,11 @@ t("confirm texts", () => {
   assert.equal(M.sizeOptions.map(o => o.value).join(","), "s,m,l")
   assert.equal(M.sizeLabel("m"), "M · 4/8")
   assert.equal(M.sizeLabel("xl"), "")
+  assert.equal(M.createLabel("m"), "Create M box")
+  assert.equal(M.createLabel("xl"), "Create")
+  assert.match(M.sizeTooltip("l"), /-s l: 8 vCPU, 16 GiB.*\$0\.06\/h/)
+  assert.match(M.confirmText("fork", "rku7"), /running programs/)
+  assert.match(M.detailLine({ forkedFrom: "base1", diskGiB: 64, flags: [] }, false), /^fork of base1 · 64 GB disk/)
   assert.equal(M.confirmButton("rm"), "Delete")
   assert.equal(M.confirmButton("topup"), "Continue")
   for (const v of ["suspend", "resume", "rm", "vnc", "desktop-off", "new", "keys-add", "keys-rm", "update", "fork"]) assert.ok(M.progressText[v], v)
