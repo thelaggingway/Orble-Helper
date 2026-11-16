@@ -153,15 +153,17 @@ def parse_boxes(text):
         if not NAME_RE.match(name):
             continue
         state = re.sub(r"^[^A-Za-z]+", "", r.get("STATE", "")).strip().lower()
-        size = re.fullmatch(r"(\d{1,3})c/(\d{1,4})g", r.get("SIZE", ""))
+        # "s 2c/4g" since the CLI got sizes (adcd323c); plain "2c/4g" before.
+        size = re.fullmatch(r"(?:([sml])\s+)?(\d{1,3})c/(\d{1,4})g", r.get("SIZE", ""))
         spent = re.fullmatch(r"\$(\d{1,7}(?:\.\d{1,6})?)", r.get("SPENT", ""))
         host = r.get("HOST", "")
         boxes.append({
             "name": name,
             "state": s(state, 32) if re.fullmatch(r"[a-z][a-z -]*", state or "") else "unknown",
             "host": host if HOST_RE.match(host) else "",
-            "vcpus": int(size[1]) if size else 0,
-            "memGiB": int(size[2]) if size else 0,
+            "size": (size[1] or "") if size else "",
+            "vcpus": int(size[2]) if size else 0,
+            "memGiB": int(size[3]) if size else 0,
             "spentUSD": float(spent[1]) if spent else 0.0,
             "active": s(r.get("ACTIVE"), 24),
             "flags": [s(f, 24) for f in r.get("extra", [])[:4] if re.fullmatch(r"[A-Za-z][A-Za-z -]*", f)],
@@ -290,6 +292,21 @@ def check_keyfile(v):
     return path
 
 
+SIZES = ("s", "m", "l")
+
+
+def check_size(v):
+    if v not in SIZES:
+        raise SystemExit("size must be s, m or l")
+    return v
+
+
+def check_count(v):
+    if not re.fullmatch(r"\d{1,2}", v or "") or not 1 <= int(v) <= 10:
+        raise SystemExit("fork count must be 1 to 10")
+    return str(int(v))
+
+
 def check_dollars(v):
     if not re.fullmatch(r"\d{2,3}", v or "") or not 10 <= int(v) <= 500:
         raise SystemExit("top-up must be whole dollars, 10 to 500")
@@ -319,8 +336,14 @@ def action(argv):
         build, timeout, ok = ONE_ARG[verb]
         b = check_name(rest[0])
         args, text = build(b), ok.format(b=b)
-    elif verb == "new" and not rest:
+    elif verb == "new" and len(rest) <= 1:
         args, timeout, text = ["new"], 300, "New box ready"
+        if rest:
+            args += ["-s", check_size(rest[0])]
+    elif verb == "fork" and len(rest) in (1, 2):
+        b = check_name(rest[0])
+        n = check_count(rest[1]) if len(rest) == 2 else "1"
+        args, timeout, text = ["fork", b, "-n", n], 600, f"Forked {b}"
     elif verb == "keys-add" and len(rest) == 1:
         path = check_keyfile(rest[0])
         args, timeout, text = ["keys", "add", path], 60, f"SSH key {rest[0]} added"
@@ -335,7 +358,7 @@ def action(argv):
     if not signed_in():
         notify(f"Orble: {verb} failed", "Not signed in. Use Sign in in the panel, or run orble login.", urgent=True)
         sys.exit(3)
-    if verb == "new":
+    if verb in ("new", "fork"):
         # With no credit, `orble new` offers a top-up at a [Y/n] prompt; never get there off a terminal.
         c = credit()
         if c is not None and c <= 0:
@@ -347,6 +370,9 @@ def action(argv):
         if verb == "new":
             m = re.search(r"\b([A-Za-z0-9][A-Za-z0-9._-]{0,62}) ready\b(.*)", out)
             text = f"{m[1]} ready{m[2].rstrip()}" if m else text
+        elif verb == "fork":
+            names = re.findall(r"\b([A-Za-z0-9][A-Za-z0-9._-]{0,62}) ready\b", out)[:10]
+            text = f"{text} → {', '.join(names)}" if names else text
         elif verb == "update":
             text = last_lines(out, n=1) or "Orble CLI updated"
         notify("Orble", text[:200])
@@ -554,7 +580,7 @@ def main():
         d = check_dollars(rest[0])
         in_terminal(f"add ${d} of credit", ["topup", d], always=True)
     elif cmd == "login" and not rest:
-        in_terminal("sign in with Google", ["login"], always=True)
+        in_terminal("sign in with Google or GitHub", ["login"], always=True)
     else:
         print(__doc__)
         sys.exit(2)

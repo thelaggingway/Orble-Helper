@@ -43,6 +43,8 @@ Panel {
   // ---------- UI state ----------
   property string expandedBox: ""
   property bool topupOpen: false
+  property bool newOpen: false
+  property string newSize: "s"
   property string topupChoice: "25"
   property bool keysOpen: false
   // Pending confirmation: { verb, target, args, extra }
@@ -140,7 +142,7 @@ Panel {
     wakeRefresh.restart()
   }
 
-  readonly property var confirmVerbs: ["rm", "keys-rm", "topup"]
+  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork"]
 
   // Destructive or paying verbs go through the confirm dialog first.
   function request(verb, target, args, extra) {
@@ -173,7 +175,11 @@ Panel {
     keyCatcher.forceActiveFocus()
   }
 
-  function newBox() { runAction("new", [], "new") }
+  // size: "s", "m" or "l" (orble new -s); empty keeps the CLI's default.
+  function newBox(size) {
+    root.newOpen = false
+    runAction("new", size ? [size] : [], "new")
+  }
 
   function ssh(name) {
     if (!Model.validName(name)) return
@@ -425,13 +431,13 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               visible: root.healthy
               iconText: Model.icons.plus
-              tooltipText: root.pending["new"] ? "Creating a box…" : "New box (orble new)"
+              tooltipText: root.pending["new"] ? "Creating a box…" : "New box (orble new -s …)"
               foreground: root.foreground
               hoverColor: root.accent
               fontFamily: root.fontFamily
               enabled: !root.pending["new"]
               opacity: enabled ? 1 : 0.4
-              onClicked: root.newBox()
+              onClicked: root.newOpen = !root.newOpen
             }
 
             PanelActionButton {
@@ -472,6 +478,27 @@ Panel {
               fontFamily: root.fontFamily
               bordered: true
               onClicked: root.signIn()
+            }
+          }
+
+          // ---------- new box size ----------
+          Row {
+            visible: root.healthy && root.newOpen && !root.pending["new"]
+            spacing: Style.space(8)
+
+            Chips {
+              anchors.verticalCenter: parent.verticalCenter
+              options: Model.sizeOptions
+              value: root.newSize
+              onChanged: function(v) { root.newSize = v }
+            }
+
+            ActionButton {
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: Model.icons.plus
+              text: "Create"
+              tooltipText: "orble new -s " + root.newSize + " (vCPU / GiB)"
+              onClicked: root.newBox(root.newSize)
             }
           }
 
@@ -1039,6 +1066,11 @@ Panel {
           iconText: Model.icons.close; text: "Desktop off"
           tooltipText: "orble desktop --off"
           onClicked: root.runAction("desktop-off", [brow.b.name])
+        }
+        ActionButton {
+          iconText: Model.icons.fork; text: "Fork"
+          tooltipText: "orble fork: a new box carrying on from this one"
+          onClicked: root.request("fork", brow.b.name)
         }
         ActionButton {
           iconText: Model.icons.trash; text: "Delete"

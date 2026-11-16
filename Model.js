@@ -12,6 +12,7 @@ var icons = {
   trash: glyph(0xF01B4),
   refresh: glyph(0xF0450),
   plus: glyph(0xF0415),
+  fork: glyph(0xF0641),
   copy: glyph(0xF018F),
   cash: glyph(0xF0114),
   link: glyph(0xF0339),
@@ -145,6 +146,16 @@ function creditLow(account, threshold) {
   return account.creditUSD < (Number(threshold) || 0)
 }
 
+// orble new -s: s 2 vCPU 4 GiB (the CLI's default), m 4/8, l 8/16.
+var sizeOptions = [
+  { value: "s", label: "S · 2/4" }, { value: "m", label: "M · 4/8" }, { value: "l", label: "L · 8/16" }
+]
+
+function sizeLabel(v) {
+  for (var i = 0; i < sizeOptions.length; i++) if (sizeOptions[i].value === v) return sizeOptions[i].label
+  return ""
+}
+
 var topupOptions = [
   { value: "10", label: "$10" }, { value: "25", label: "$25" },
   { value: "50", label: "$50" }, { value: "100", label: "$100" }
@@ -154,6 +165,7 @@ function confirmText(verb, target, extra) {
   switch (verb) {
   case "rm": return "Delete box " + target + "? Its disk and everything on it are gone for good."
   case "keys-rm": return "Remove SSH key " + target + " from your Orble account? New boxes won't accept it."
+  case "fork": return "Fork " + target + " into a new box? It carries on from " + target + "'s disk and is billed like any box."
   case "topup": return "Add " + target + " of Orble credit? orble topup opens in a terminal; follow it there to pay."
   default: return verb + " " + target + "?"
   }
@@ -163,6 +175,7 @@ function confirmButton(verb) {
   if (verb === "rm") return "Delete"
   if (verb === "keys-rm") return "Remove"
   if (verb === "topup") return "Continue"
+  if (verb === "fork") return "Fork"
   return "Confirm"
 }
 
@@ -210,5 +223,5 @@ function ago(nowSec, thenSec) {
 var progressText = {
   "suspend": "Suspending", "resume": "Resuming", "rm": "Deleting", "vnc": "Opening desktop",
   "desktop-off": "Turning desktop off", "new": "Creating", "keys-add": "Adding", "keys-rm": "Removing",
-  "update": "Updating"
+  "update": "Updating", "fork": "Forking"
 }

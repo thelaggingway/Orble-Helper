@@ -32,10 +32,10 @@ To check the expanded box or the keys list, temporarily set the `expandedBox` / 
 1. **Plain text only**: `PlainText`, never a bare `Text {}`.
 2. **Argv only**: arrays in QML, `subprocess` lists in Python, never `sh -c` or `shell=True`.
 3. **Validate before the CLI runs**: `NAME_RE` (same in Python and `Model.js`), `FP_RE`, `KEYFILE_RE` + realpath inside `~/.ssh`, `check_dollars` 10–500. The CLI doesn't validate (`orble rm --help` asks to delete a box named `--help`).
-4. **Whitelisted verbs**: `ONE_ARG` or an explicit branch in `action()`. Unknown verbs exit before calling the CLI.
+4. **Whitelisted verbs**: `ONE_ARG` or an explicit branch in `action()` (`new [s|m|l]`, `fork <box> [1-10]`, `keys-*`, `update`). Unknown verbs exit before calling the CLI.
 5. **Never start a sign-in in the background.** `signed_in()` checks only that `config.json` has a `token` (never reads it out; `source-test.sh` checks the word appears once). `cli()` kills the CLI as soon as it prints a sign-in marker.
 6. **Never reach a prompt in the background.** stdin is `/dev/null`; `rm` gets `-y`; `keys add` gets a path; `new` is refused when `account` shows credit ≤ 0 (the CLI would offer a top-up).
-7. **Money is visible and confirmed.** `topup` is in `confirmVerbs` and runs only via `openTerminal`, never as a background action.
+7. **Money is visible and confirmed.** `fork` (a new billed box) and `topup` are in `confirmVerbs`; `topup` and runs only via `openTerminal`, never as a background action.
 8. **The exit node stops like Ctrl-C**: `exitProc.signal(2)`, with a 10 s fallback. The helper `execve`s the CLI so the signal reaches it directly.
 9. **QML list wrappers**: status arrays stored in a `property var` fail `Array.isArray`; read them by index (`flagsOf`) or with `filter`/`map`.
 10. **Keep awake** is one long-running `keep-awake <box>...` helper owned by `awakeProc`; changing the list restarts it (SIGTERM, then `onExited` starts the new list). It never loops on its own failures, stops at a sign-in prompt (exit 3), and suspending a box from the panel drops that box first, or the reconnect would resume it.
@@ -44,16 +44,17 @@ To check the expanded box or the keys list, temporarily set the `expandedBox` / 
 
 ## CLI facts this depends on
 
-Checked against the `orble` CLI of 2026-11-14 (`orble update` reported `515f19f2`). No `--json` anywhere; confirm table layouts after CLI updates.
+Checked against the `orble` CLI of 2026-11-16 (`adcd323c`; first written against `515f19f2`). No `--json` anywhere; confirm table layouts after CLI updates.
 
-- `ls`: `NAME  STATE  HOST  SIZE  SPENT  ACTIVE` then unlabeled extra words (`desktop` while the desktop runs). STATE is a glyph + word (`◐ suspended`, `● running`). SIZE `2c/4g`. Columns are aligned by rune. No boxes: `No boxes yet. Create one: orble new`.
+- `ls`: `NAME  STATE  HOST  SIZE  SPENT  ACTIVE` then unlabeled extra words (`desktop` while the desktop runs). STATE is a glyph + word (`◐ suspended`, `● running`). SIZE `s 2c/4g` (size class s|m|l, then vCPUs/GiB; before `adcd323c` just `2c/4g`, still parsed). Columns are aligned by rune. No boxes: `No boxes yet. Create one: orble new`.
 - `account`: email line, then `  boxes   <box>.<slug>.orble.tech`, `  credit  $5.00`, `  keys    1`.
 - `keys`: `<name>  SHA256:<43 chars>` per line. `keys add [file]` prompts for a path without one. `keys rm <fingerprint>`.
 - Box hosts resolve to IPv6 only: plain `ssh <host>` fails on IPv4-only networks ("Network is unreachable"), while `orble ssh <box> [-- cmd]` routes the connection itself. Copy SSH therefore copies `orble ssh <box>`.
-- `new [--ssh]` prints `✓ <name> ready in 0.16s`. No name, size or template options.
+- `new [-s s|m|l] [--ssh]` prints `✓ <name> ready in 0.16s`. Sizes: s 2 vCPU 4 GiB (default), m 4/8, l 8/16. No name or template options.
+- `fork <box> [-n N]` (1–10): new boxes carrying on from this one. Output not yet seen live; the helper collects every `<name> ready` it prints. Like `new`, it may offer a top-up at zero credit, so it gets the same credit check.
 - `suspend|resume|vnc <box>`, `rm <box> [-y]`, `desktop <box> [--off]` (viewer: `xtigervncviewer` or `remmina`, tunnel on 127.0.0.1:5901).
 - `exit-node [--lan] [--fallback] [box...]` runs until Ctrl-C.
-- `topup [dollars]` (10–500), `login` (Google, device code), `update`, hidden `__boxes`, `completion bash|zsh|fish`.
+- `topup [dollars]` (10–500), `login` (Google or GitHub, device code), `update`, hidden `__boxes`, `completion bash|zsh|fish`.
 - Auto-suspend (measured 2026-11-14): a box suspends about 1 minute after its last SSH connection closes. An open SSH session or an open desktop viewer keeps it awake; running processes do not (a tmux job froze while suspended and carried on after resume, so processes survive but nothing runs). `ls` ACTIVE is the time since the last connection started. Boxes can be pinned awake in the dashboard only; the CLI has no pin.
 - Config: `$XDG_CONFIG_HOME/orble/config.json` with `api`, `token`, `domain`.
 

@@ -14,7 +14,7 @@ It is a front end to the official `orble` CLI and uses the CLI's own sign-in. Th
 
 **Credit.** Your credit, account and box hostname pattern (`<box>.<account>.orble.tech`). **Add credit** offers $10, $25, $50 or $100; after you confirm, `orble topup <amount>` runs in a terminal, where you finish paying the way the CLI asks. The plugin never pays anything itself.
 
-**New box (+).** Runs `orble new`. The notification names the box and how fast it started. With no credit, the panel refuses rather than letting `orble new` prompt for a top-up in the background.
+**New box (+).** Pick a size (S 2 vCPU / 4 GiB, M 4/8, L 8/16) and Create: runs `orble new -s <size>`. The notification names the box and how fast it started. With no credit, the panel refuses rather than letting `orble new` prompt for a top-up in the background.
 
 **Boxes.** Every box shows its state, size and spend, with two buttons:
 
@@ -32,6 +32,7 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 | Desktop | `orble vnc <box>`: the desktop in your browser, started if needed | No |
 | VNC viewer | `orble desktop <box>` in a terminal (shown only when `xtigervncviewer` or `remmina` is installed) | No |
 | Desktop off | `orble desktop <box> --off` (shown while the desktop runs) | No |
+| Fork | `orble fork <box> -n 1` (a new box carrying on from this one) | Yes |
 | Delete | `orble rm <box> -y` | Yes |
 
 **Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** holds one idle `orble ssh <box> -- sleep infinity` session open per box, reconnecting if it drops (connecting also resumes a suspended box), and shows a coffee cup next to the box. It works only while this machine is on and the shell runs; suspending the box from the panel turns it off. For a box that should stay up while your laptop sleeps, pin it in the Orble dashboard; the CLI has no pin command yet.
@@ -78,7 +79,7 @@ omarchy bar set thelaggingway.orble-helper demoMode true --json
 
 ```bash
 omarchy-shell thelaggingway.orble-helper toggle     # also open, close, refresh
-omarchy-shell thelaggingway.orble-helper newBox     # orble new
+omarchy-shell thelaggingway.orble-helper newBox     # orble new (default size)
 omarchy-shell thelaggingway.orble-helper exitNode   # start or stop the exit node
 ```
 
@@ -105,7 +106,7 @@ Panel.qml ──argv──▶ bin/orble-panel ──argv──▶ orble CLI ─�
 
 - **No secrets.** Signed out, every `orble` command starts a browser sign-in, so the background poll must not run one. The helper checks only *whether* `~/.config/orble/config.json` has a token, never reading it out, and reports "Not signed in" without calling the CLI. If the CLI starts a sign-in anyway (an expired token), the call is ended at once.
 - **No shell strings, strict input.** Every process gets a fixed argument list. Box names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`, fingerprints `SHA256:` plus 43 base64 characters, key files must be `.pub` files directly in `~/.ssh` (links resolved), and top-ups whole dollars from 10 to 500. Nothing can become a flag (the CLI itself would happily try to delete a box named `--help`).
-- **No prompts in the background.** The CLI gets empty stdin, `rm` always gets `-y`, `keys add` always gets a file, and `new` is refused at zero credit.
+- **No prompts in the background.** The CLI gets empty stdin, `rm` always gets `-y`, `keys add` always gets a file, and `new` and `fork` are refused at zero credit.
 - **Asks first:** delete, key removal and top-ups. Top-ups only ever run in a visible terminal.
 - **Plain text only**, for names and CLI output.
 - **Network use:** only what the `orble` CLI does: 3 requests every 2 minutes in the background, every 10 s while the panel is open, plus the actions you click. No cache or state files.

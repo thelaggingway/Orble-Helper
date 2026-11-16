@@ -29,15 +29,17 @@ fi
 case "$*" in
   ls) [[ -n ${FAKE_EMPTY:-} ]] && { echo "No boxes yet. Create one: orble new"; exit 0; }
     printf '%s\n' \
-    'NAME     STATE          HOST                             SIZE   SPENT    ACTIVE   ' \
-    'rku7     ◐ suspended    rku7.zippy-summit.orble.tech     2c/4g  $0.0031  30h ago  desktop' \
-    'k7f2     ● running      k7f2.zippy-summit.orble.tech     4c/8g  $1.25    now      ' \
-    '-rf      ● running      evil.example.com                 2c/4g  $0.00    now      ' \
-    'x$(id)   ● running      x.zippy-summit.orble.tech        2c/4g  $0.00    now      ' ;;
+    'NAME     STATE          HOST                             SIZE     SPENT    ACTIVE   ' \
+    'rku7     ◐ suspended    rku7.zippy-summit.orble.tech     s 2c/4g  $0.0031  30h ago  desktop' \
+    'k7f2     ● running      k7f2.zippy-summit.orble.tech     4c/8g    $1.25    now      ' \
+    'big1     ● running      big1.zippy-summit.orble.tech     l 8c/16g $0.10    2m ago   ' \
+    '-rf      ● running      evil.example.com                 s 2c/4g  $0.00    now      ' \
+    'x$(id)   ● running      x.zippy-summit.orble.tech        s 2c/4g  $0.00    now      ' ;;
   account)
     printf 'agent@example.com\n  boxes   <box>.zippy-summit.orble.tech\n  credit  $%s\n  keys    1\n' "${FAKE_CREDIT:-5.00}" ;;
   keys) printf 'omarchy-yoga  %s\n' "$FP_ON" ;;
-  new) echo "✓ k9zz ready in 0.21s" ;;
+  new|new\ -s\ *) echo "✓ k9zz ready in 0.21s" ;;
+  fork\ *) echo "✓ rku7-f1 ready in 0.40s"; echo "✓ rku7-f2 ready in 0.42s" ;;
   update) echo "✓ Orble is up to date 515f19f2" ;;
   rm\ broken*) echo "orble: no such box" >&2; exit 1 ;;
   ssh\ *--\ sleep\ infinity) [[ -n ${FAKE_SSH_DROP:-} ]] && { echo "Connection closed by remote host" >&2; exit 255; }
@@ -63,9 +65,10 @@ import json, os, sys
 d = json.loads(sys.argv[1])
 assert d["ok"] is True and d["error"] == "", d
 b = {x["name"]: x for x in d["boxes"]}
-assert sorted(b) == ["k7f2", "rku7"], sorted(b)
+assert sorted(b) == ["big1", "k7f2", "rku7"], sorted(b)
 r = b["rku7"]
 assert r["state"] == "suspended" and r["host"] == "rku7.zippy-summit.orble.tech"
+assert r["size"] == "s" and b["k7f2"]["size"] == "" and (b["big1"]["size"], b["big1"]["vcpus"], b["big1"]["memGiB"]) == ("l", 8, 16), b
 assert (r["vcpus"], r["memGiB"], r["spentUSD"], r["active"], r["flags"]) == (2, 4, 0.0031, "30h ago", ["desktop"]), r
 k = b["k7f2"]
 assert k["state"] == "running" and k["vcpus"] == 4 and k["spentUSD"] == 1.25 and k["flags"] == [] and k["active"] == "now"
@@ -111,6 +114,9 @@ ok
 "$HELPER" action keys-rm "$FP_ON"
 "$HELPER" action update
 "$HELPER" action new
+"$HELPER" action new m
+"$HELPER" action fork rku7
+"$HELPER" action fork rku7 2
 expected="suspend rku7
 resume rku7
 rm rku7 -y
@@ -120,12 +126,19 @@ keys add $T/home/.ssh/id_new.pub
 keys rm $FP_ON
 update
 account
-new"
+new
+account
+new -s m
+account
+fork rku7 -n 1
+account
+fork rku7 -n 2"
 [[ $(cat "$LOG") == "$expected" ]] || { diff <(echo "$expected") "$LOG"; fail "action argv"; }
 ok
-[[ $(wc -l < "$NOTES") -eq 9 ]] || fail "one notification per action"
+[[ $(wc -l < "$NOTES") -eq 12 ]] || fail "one notification per action"
 grep -q "k9zz ready in 0.21s" "$NOTES" || fail "new box name in the notification"
 grep -q "up to date" "$NOTES" || fail "update notification"
+grep -q "Forked rku7 → rku7-f1, rku7-f2" "$NOTES" || fail "fork names in the notification"
 ok
 
 # --- no credit: new is refused before orble new could offer a top-up ---
@@ -133,6 +146,9 @@ ok
 set +e; FAKE_CREDIT=0.00 "$HELPER" action new >/dev/null 2>&1; code=$?; set -e
 [[ $code -eq 5 && $(cat "$LOG") == "account" ]] || fail "new with no credit (code $code, calls: $(cat "$LOG"))"
 grep -q "no credit" "$NOTES" || fail "no-credit notification"
+: > "$LOG"
+set +e; FAKE_CREDIT=0.00 "$HELPER" action fork rku7 >/dev/null 2>&1; code=$?; set -e
+[[ $code -eq 5 && $(cat "$LOG") == "account" ]] || fail "fork with no credit (code $code)"
 ok
 
 # --- failures notify urgently and keep the exit code ---
@@ -151,7 +167,16 @@ for bad in 'a;b' '-rf' '--help' '$(id)' '' 'x y' "$(printf 'a%.0s' {1..70})"; do
   refuse ssh "$bad"
   refuse desktop "$bad"
   refuse exit-node "$bad"
+  refuse action fork "$bad"
 done
+refuse action new xl
+refuse action new -s
+refuse action new s m
+refuse action fork rku7 0
+refuse action fork rku7 11
+refuse action fork rku7 -n
+refuse action fork rku7 1 2
+refuse action fork
 refuse action rm
 refuse action rm a b
 refuse action new extra
