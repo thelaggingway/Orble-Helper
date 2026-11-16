@@ -9,7 +9,8 @@ import "Model.js" as Model
 // Orble: sandboxes for AI agents, in the bar.
 //
 // All CLI work happens in bin/orble-panel, which calls the signed-in `orble`
-// CLI with a fixed argv. This file polls `status`, draws the panel, opens SSH,
+// CLI with a fixed argv. This file polls `status` (and a box's shared ports
+// when it is expanded), draws the panel, opens SSH,
 // the VNC desktop, top-ups and sign-in in a terminal, runs actions as child
 // processes (the helper sends the notification), and owns the exit node
 // process (stopped with SIGINT, like Ctrl-C).
@@ -47,6 +48,19 @@ Panel {
   property string newSize: "s"
   property string topupChoice: "25"
   property bool keysOpen: false
+  property bool snapshotsOpen: false
+  // The box whose "save a snapshot" row is open, and the name typed there (empty: the CLI picks).
+  property string snapFor: ""
+  property string snapName: ""
+  // The snapshot whose "new box from it" sizes are open, and the size picked.
+  property string fromSnap: ""
+  property string fromSize: "s"
+  // box -> [{port, access, url}] from `orble-panel ports <box>`, loaded when a box is expanded.
+  property var ports: ({})
+  property var portsLoading: ({})
+  property string portInput: ""
+  // While a text field has focus, keys go to it instead of the panel's shortcuts.
+  property bool editorFocus: false
   // Pending confirmation: { verb, target, args, extra }
   property var confirm: null
   // target -> verb for actions in flight
@@ -71,6 +85,8 @@ Panel {
   readonly property var boxes: healthy ? status.boxes : []
   readonly property var account: healthy ? status.account : null
   readonly property var keys: healthy ? status.keys : []
+  readonly property var snapshots: healthy ? status.snapshots : []
+  readonly property bool hasSnapshots: healthy && status.snapshotsSupported
   readonly property var newLocalKeys: healthy ? status.localKeys.filter(function(k) { return !k.added }) : []
   readonly property bool hasViewer: healthy && status.viewer !== ""
   readonly property bool lowCredit: Model.creditLow(account, lowCreditUSD)
@@ -103,6 +119,70 @@ Panel {
     if (kept.length !== root.exitBoxes.length && !root.exitOn) root.exitBoxes = kept
     var awake = root.awakeBoxes.filter(function(n) { return names.indexOf(n) >= 0 })
     if (awake.length !== root.awakeBoxes.length) setAwake(awake)
+    var snaps = next.snapshots.map(function(x) { return x.name })
+    if (root.fromSnap && snaps.indexOf(root.fromSnap) < 0) root.fromSnap = ""
+  }
+
+  // ----- shared ports (per box, on demand: `orble port <box>` has no JSON and one call per box) -----
+
+  function loadPorts(name) {
+    if (!Model.validName(name) || root.portsLoading[name]) return
+    var proc = portsComponent.createObject(root, { box: name, command: [root.helper, "ports", name].concat(root.demoArg) })
+    if (!proc) return
+    setMap("portsLoading", name, true)
+    proc.running = true
+  }
+
+  function applyPorts(name, text) {
+    setMap("portsLoading", name, false)
+    var d = null
+    try { d = JSON.parse(String(text || "")) } catch (e) { d = null }
+    if (!d || d.box !== name) return
+    setMap("ports", name, d.ok ? (d.ports || []) : { error: String(d.error || "") })
+  }
+
+  function portsOf(name) {
+    var p = root.ports[name]
+    return p && typeof p.length === "number" ? p : []
+  }
+
+  function portsError(name) {
+    var p = root.ports[name]
+    return p && typeof p.length !== "number" ? p.error : ""
+  }
+
+  function setMap(prop, key, value) {
+    var next = Object.assign({}, root[prop])
+    if (value === false || value === undefined) delete next[key]
+    else next[key] = value
+    root[prop] = next
+  }
+
+  function sharePort(name, port, publicly) {
+    port = String(port || "").trim()
+    if (!Model.validName(name) || !Model.validPort(port)) return
+    root.portInput = ""
+    if (publicly) request("port-public", name + ":" + port, [name, port])
+    else runAction("port", [name, port], "port:" + name + ":" + port)
+  }
+
+  function unsharePort(name, port) {
+    runAction("port-off", [name, String(port)], "port:" + name + ":" + port)
+  }
+
+  // ----- snapshots -----
+
+  function saveSnapshot(name) {
+    var n = root.snapName.trim()
+    if (!Model.validName(name) || !Model.validSnapshotName(n)) return
+    root.snapFor = ""
+    root.snapName = ""
+    runAction("snapshot", n ? [name, n] : [name], name)
+  }
+
+  function newFromSnapshot(snap, size) {
+    root.fromSnap = ""
+    runAction("new-from", [snap.name, size], "snap:" + snap.name)
   }
 
   // ---------- actions ----------
@@ -131,6 +211,8 @@ Panel {
 
   function finishAction(target) {
     setPending(target, "")
+    var m = /^port:([^:]+):/.exec(target)
+    if (m) loadPorts(m[1])
     refresh()
   }
 
@@ -142,7 +224,7 @@ Panel {
     wakeRefresh.restart()
   }
 
-  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork"]
+  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public"]
 
   // Destructive or paying verbs go through the confirm dialog first.
   function request(verb, target, args, extra) {
@@ -165,6 +247,10 @@ Panel {
     if (c.verb === "topup") {
       root.topupOpen = false
       openTerminal(["topup"].concat(c.args))
+    } else if (c.verb === "port-public") {
+      runAction(c.verb, c.args, "port:" + c.args[0] + ":" + c.args[1])
+    } else if (c.verb === "snapshot-rm") {
+      runAction(c.verb, c.args, "snap:" + c.args[0])
     } else {
       runAction(c.verb, c.args)
     }
@@ -186,6 +272,12 @@ Panel {
     openTerminal(["ssh", name])
   }
 
+  function copyText(t) {
+    if (!/^https:\/\//.test(t)) return
+    Quickshell.execDetached(["wl-copy", t])
+    Quickshell.execDetached(["omarchy-notification-send", "--app-name", "Orble", "-u", "low", "Copied", t])
+  }
+
   function copySsh(b) {
     if (!Model.validName(b.name)) return
     var cmd = Model.sshCommand(b)
@@ -201,6 +293,9 @@ Panel {
 
   function toggleBox(b) {
     root.expandedBox = root.expandedBox !== b.name ? b.name : ""
+    root.snapFor = ""
+    root.portInput = ""
+    if (root.expandedBox) loadPorts(root.expandedBox)
   }
 
   // ----- exit node -----
@@ -249,10 +344,13 @@ Panel {
     if (!opened) {
       root.confirm = null
       root.topupOpen = false
+      root.snapFor = ""
+      root.fromSnap = ""
       return
     }
     root.now = Date.now() / 1000
     if (root.now - root.lastRefreshAt > 8) refresh()
+    if (root.expandedBox) loadPorts(root.expandedBox)
   }
 
   IpcHandler {
@@ -305,6 +403,15 @@ Panel {
 
   // If the CLI ignores SIGINT for 10 s, end it.
   Timer { id: exitKill; interval: 10000; onTriggered: if (exitProc.running) exitProc.running = false }
+
+  Component {
+    id: portsComponent
+    Process {
+      property string box: ""
+      // stdout always finishes (empty on a failure), so it clears the loading mark and cleans up.
+      stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.applyPorts(box, text); destroy() } }
+    }
+  }
 
   Component {
     id: opComponent
@@ -366,7 +473,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirm !== null
+      blocked: root.confirm !== null || root.editorFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -546,6 +653,40 @@ Panel {
             color: root.muted
             font.pixelSize: Style.font.caption
             wrapMode: Text.Wrap
+          }
+
+          // ---------- snapshots ----------
+          Item {
+            visible: root.hasSnapshots
+            width: parent.width
+            implicitHeight: snapsHeader.implicitHeight
+
+            PanelSectionHeader {
+              id: snapsHeader
+              text: "SNAPSHOTS " + (root.snapshotsOpen ? "▾" : "▸") + "  " + root.snapshots.length
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.snapshotsOpen = !root.snapshotsOpen
+            }
+          }
+
+          Repeater {
+            model: root.snapshotsOpen ? root.snapshots : []
+            delegate: SnapshotRow {}
+          }
+
+          PlainText {
+            visible: root.hasSnapshots && root.snapshotsOpen && root.snapshots.length === 0
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "No snapshots. Open a box and use Snapshot to save one; new boxes can start from it."
+            color: root.muted
+            font.pixelSize: Style.font.caption
           }
 
           PanelSeparator { visible: root.healthy; foreground: root.foreground }
@@ -1075,10 +1216,301 @@ Panel {
           onClicked: root.request("fork", brow.b.name)
         }
         ActionButton {
+          visible: root.hasSnapshots
+          iconText: Model.icons.camera; text: "Snapshot"
+          active: root.snapFor === brow.b.name
+          tooltipText: "orble snapshot: save this box to make new boxes from ($0.05 per GiB-month while kept)"
+          onClicked: { root.snapFor = root.snapFor === brow.b.name ? "" : brow.b.name; root.snapName = "" }
+        }
+        ActionButton {
           iconText: Model.icons.trash; text: "Delete"
           foreground: root.urgent
           onClicked: root.request("rm", brow.b.name)
         }
+      }
+
+      // Save a snapshot: optional name, then Save.
+      Row {
+        visible: root.snapFor === brow.b.name && !brow.isBusy
+        spacing: Style.space(6)
+
+        TextField {
+          id: snapField
+          width: Style.space(170)
+          anchors.verticalCenter: parent.verticalCenter
+          placeholderText: "name (optional)"
+          text: root.snapName
+          maximumLength: 63
+          font.pixelSize: Style.font.caption
+          verticalPadding: Style.space(3)
+          foreground: root.foreground
+          accent: root.accent
+          onTextEdited: root.snapName = text
+          onActiveFocusChanged: root.editorFocus = activeFocus
+          onAccepted: root.saveSnapshot(brow.b.name)
+          Keys.onEscapePressed: { root.snapFor = ""; keyCatcher.forceActiveFocus() }
+        }
+
+        ActionButton {
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: Model.icons.camera
+          text: "Save"
+          enabled: Model.validSnapshotName(root.snapName)
+          opacity: enabled ? 1 : 0.4
+          tooltipText: "orble snapshot " + brow.b.name + (root.snapName.trim() ? " " + root.snapName.trim() : "")
+          onClicked: root.saveSnapshot(brow.b.name)
+        }
+      }
+
+      PlainText {
+        visible: root.snapFor === brow.b.name && root.snapName.trim() !== "" && !Model.validSnapshotName(root.snapName)
+        width: parent.innerWidth
+        text: "Letters, digits, dot, dash and underscore; starting with a letter or digit."
+        color: root.urgent
+        font.pixelSize: Style.font.caption
+      }
+
+      // Shared ports: each at its own https address.
+      PlainText {
+        width: parent.innerWidth
+        text: Model.icons.share + "  PORTS" + (root.portsLoading[brow.b.name] ? "  ·  loading…" : "")
+        color: root.muted
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.2
+      }
+
+      Repeater {
+        model: brow.isOpen ? root.portsOf(brow.b.name) : []
+        delegate: PortRow { box: brow.b.name; rowWidth: brow.width - Style.space(24) }
+      }
+
+      PlainText {
+        visible: brow.isOpen && root.portsError(brow.b.name) !== ""
+        width: parent.innerWidth
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        text: root.portsError(brow.b.name)
+        color: root.urgent
+        font.pixelSize: Style.font.caption
+      }
+
+      Row {
+        spacing: Style.space(6)
+
+        TextField {
+          id: portField
+          width: Style.space(80)
+          anchors.verticalCenter: parent.verticalCenter
+          placeholderText: "port"
+          text: root.expandedBox === brow.b.name ? root.portInput : ""
+          maximumLength: 5
+          inputMethodHints: Qt.ImhDigitsOnly
+          validator: IntValidator { bottom: 1; top: 65535 }
+          font.pixelSize: Style.font.caption
+          verticalPadding: Style.space(3)
+          foreground: root.foreground
+          accent: root.accent
+          onTextEdited: root.portInput = text
+          onActiveFocusChanged: root.editorFocus = activeFocus
+          onAccepted: root.sharePort(brow.b.name, root.portInput, false)
+          Keys.onEscapePressed: { root.portInput = ""; keyCatcher.forceActiveFocus() }
+        }
+
+        ActionButton {
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: Model.icons.lock
+          text: "Share"
+          enabled: Model.validPort(root.portInput)
+          opacity: enabled ? 1 : 0.4
+          tooltipText: "orble port " + brow.b.name + " " + (root.portInput || "<port>") + ": an https address only your Orble account can open"
+          onClicked: root.sharePort(brow.b.name, root.portInput, false)
+        }
+
+        ActionButton {
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: Model.icons.earth
+          text: "Public"
+          enabled: Model.validPort(root.portInput)
+          opacity: enabled ? 1 : 0.4
+          tooltipText: "orble port --public: anyone with the address can open it (accounts that have added credit)"
+          onClicked: root.sharePort(brow.b.name, root.portInput, true)
+        }
+      }
+    }
+  }
+
+  component PortRow: Item {
+    id: prow
+    required property var modelData
+    property string box: ""
+    property real rowWidth: column.width
+    readonly property var p: modelData
+    readonly property string busyVerb: root.pending["port:" + box + ":" + p.port] || ""
+    width: rowWidth
+    implicitHeight: Math.max(pcol.implicitHeight, poff.implicitHeight)
+
+    Column {
+      id: pcol
+      anchors.left: parent.left
+      anchors.right: popen.left
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(1)
+
+      PlainText {
+        width: parent.width
+        text: prow.p.port + "  " + (prow.p.access === "public" ? Model.icons.earth : Model.icons.lock)
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+      }
+      PlainText {
+        width: parent.width
+        text: prow.busyVerb ? Model.progressText[prow.busyVerb] + "…" : prow.p.url
+        color: root.muted
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideMiddle
+      }
+    }
+
+    PanelActionButton {
+      id: popen
+      anchors.right: pcopy.left
+      anchors.rightMargin: Style.space(2)
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: Model.icons.open
+      tooltipText: "Open " + prow.p.url + " (" + Model.portAccess(prow.p) + ")"
+      foreground: root.foreground
+      hoverColor: root.accent
+      fontFamily: root.fontFamily
+      onClicked: { root.openUrl(prow.p.url); root.close() }
+    }
+
+    PanelActionButton {
+      id: pcopy
+      anchors.right: poff.left
+      anchors.rightMargin: Style.space(2)
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: Model.icons.copy
+      tooltipText: "Copy the address"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onClicked: root.copyText(prow.p.url)
+    }
+
+    PanelActionButton {
+      id: poff
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(4)
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: Model.icons.close
+      tooltipText: "Stop sharing (orble port --off)"
+      foreground: root.urgent
+      fontFamily: root.fontFamily
+      enabled: prow.busyVerb === ""
+      opacity: enabled ? 1 : 0.35
+      onClicked: root.unsharePort(prow.box, prow.p.port)
+    }
+  }
+
+  component SnapshotRow: Column {
+    id: srow
+    required property var modelData
+    readonly property var sn: modelData
+    readonly property string busyVerb: root.pending["snap:" + sn.name] || ""
+    readonly property bool sizesOpen: root.fromSnap === sn.name
+    width: column.width
+    spacing: Style.space(6)
+
+    Item {
+      width: parent.width
+      implicitHeight: Math.max(scol.implicitHeight, snew.implicitHeight)
+
+      PlainText {
+        id: sicon
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+        text: Model.icons.camera
+        color: root.muted
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Column {
+        id: scol
+        anchors.left: sicon.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: snew.left
+        anchors.rightMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(1)
+
+        PlainText {
+          width: parent.width
+          text: srow.sn.name
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+        }
+        PlainText {
+          width: parent.width
+          text: srow.busyVerb ? Model.progressText[srow.busyVerb] + "…" : Model.snapshotLine(srow.sn)
+          color: root.muted
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      PanelActionButton {
+        id: snew
+        anchors.right: srm.left
+        anchors.rightMargin: Style.space(2)
+        anchors.verticalCenter: parent.verticalCenter
+        iconText: Model.icons.plus
+        tooltipText: "New box from " + srow.sn.name + " (orble new --from)"
+        foreground: root.foreground
+        hoverColor: root.accent
+        fontFamily: root.fontFamily
+        enabled: srow.busyVerb === "" && srow.sn.state === "ready"
+        opacity: enabled ? 1 : 0.35
+        onClicked: {
+          root.fromSnap = srow.sizesOpen ? "" : srow.sn.name
+          root.fromSize = srow.sn.size || "s"
+        }
+      }
+
+      PanelActionButton {
+        id: srm
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+        iconText: Model.icons.trash
+        tooltipText: "Delete the snapshot (orble snapshot rm)"
+        foreground: root.urgent
+        fontFamily: root.fontFamily
+        enabled: srow.busyVerb === ""
+        opacity: enabled ? 1 : 0.35
+        onClicked: root.request("snapshot-rm", srow.sn.name, [srow.sn.name])
+      }
+    }
+
+    Row {
+      visible: srow.sizesOpen && srow.busyVerb === ""
+      leftPadding: Style.space(24)
+      spacing: Style.space(8)
+
+      Chips {
+        anchors.verticalCenter: parent.verticalCenter
+        options: Model.sizesFrom(srow.sn)
+        value: root.fromSize
+        onChanged: function(v) { root.fromSize = v }
+      }
+
+      ActionButton {
+        anchors.verticalCenter: parent.verticalCenter
+        iconText: Model.icons.plus
+        foreground: root.accent
+        text: Model.createLabel(root.fromSize)
+        tooltipText: Model.fromTooltip(srow.sn, root.fromSize)
+        onClicked: root.newFromSnapshot(srow.sn, root.fromSize)
       }
     }
   }

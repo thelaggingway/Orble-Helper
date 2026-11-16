@@ -1,12 +1,12 @@
 # Orble Helper
 
-An [Omarchy](https://omarchy.org/) bar plugin for [Orble](https://orble.tech), sandboxes for AI agents. It puts your boxes, credit, SSH keys and the exit node in a panel on the bar, covering everything the `orble` CLI does: new boxes, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node with its LAN and fallback options, SSH keys, top-ups, sign-in and CLI updates.
+An [Omarchy](https://omarchy.org/) bar plugin for [Orble](https://orble.tech), sandboxes for AI agents. It puts your boxes, snapshots, credit, SSH keys and the exit node in a panel on the bar, covering every command on the [CLI docs](https://orble.tech/docs?tab=cli): new boxes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node with its LAN and fallback options, SSH keys, top-ups, sign-in and CLI updates.
 
 It is a front end to the official `orble` CLI and uses the CLI's own sign-in. The plugin stores no token or password.
 
 ![The Orble Helper panel, showing made-up demo data](preview.png)
 
-*The panel with **Demo data** on (made-up boxes, keys and credit), one box expanded and the exit node running.*
+*The panel with **Demo data** on (made-up boxes, keys and credit), one box expanded and the exit node running. Taken before snapshots and ports were added.*
 
 ## What it does
 
@@ -33,7 +33,12 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 | VNC viewer | `orble desktop <box>` in a terminal (shown only when `xtigervncviewer` or `remmina` is installed) | No |
 | Desktop off | `orble desktop <box> --off` (shown while the desktop runs) | No |
 | Fork | `orble fork <box> -n 1` (a new box carrying on from this one, running programs included; forks are listed indented under their box) | Yes |
+| Snapshot | `orble snapshot <box> [name]`: type an optional name, then **Save** (storage only, $0.05 per GiB-month) | No |
 | Delete | `orble rm <box> -y` | Yes |
+
+**Ports.** An expanded box also lists its shared ports (`orble port <box>`), each at its own HTTPS address, with buttons to open it, copy the address, or stop sharing (`orble port <box> <port> --off`). Type a port and choose **Share** (`orble port <box> <port>`: only your signed-in Orble account can open it) or **Public** (`--public`: anyone with the address, asks first; Orble allows it only on accounts that have added credit). Ports load when you expand a box, since the CLI lists them one box at a time.
+
+**Snapshots.** A collapsible list of your snapshots (`orble snapshots --json`): name, the box it was saved from, its size, disk and age. **+** offers the sizes a box made from it can have and runs `orble new --from <snapshot> -s <size>`. At the snapshot's own size the new box has its files and running programs; larger, its files only (the tooltip says which). The trash button deletes it (`orble snapshot rm <snapshot> -y`, asks first). Like `new`, making a box from a snapshot is refused at zero credit. The section is hidden with a CLI from before snapshots; **Update CLI** fixes that.
 
 **Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** holds one idle `orble ssh <box> -- sleep infinity` session open per box, reconnecting if it drops (connecting also resumes a suspended box), and shows a coffee cup next to the box. It works only while this machine is on and the shell runs; suspending the box from the panel turns it off. For a box that should stay up while your laptop sleeps, pin it in the Orble dashboard; the CLI has no pin command yet.
 
@@ -89,6 +94,10 @@ The helper works on its own too:
 H=~/.config/omarchy/plugins/thelaggingway.orble-helper/bin/orble-panel
 $H status | jq .
 $H action suspend <box>
+$H ports <box> | jq .
+$H action snapshot <box> [name]
+$H action new-from <snapshot> [s|m|l]
+$H action port <box> <port>
 $H exit-node --lan <box>
 ```
 
@@ -98,18 +107,18 @@ $H exit-node --lan <box>
 Panel.qml ──argv──▶ bin/orble-panel ──argv──▶ orble CLI ──HTTPS──▶ orble.tech
 ```
 
-- **`bin/orble-panel`** (Python, standard library) is the only code that runs `orble`. The CLI has no JSON output, so `status` runs `ls`, `account` and `keys` in parallel and parses their tables by the header's column positions.
+- **`bin/orble-panel`** (Python, standard library) is the only code that runs `orble`. `status` runs `ls --json`, `snapshots --json`, `account` and `keys` in parallel; the last two have no JSON, so their text is parsed (and `ls` falls back to its table on an older CLI). `ports <box>` parses `orble port <box>`.
 - **`Panel.qml`** draws everything, polls `status`, runs actions as child processes, opens terminals for SSH, the VNC viewer, top-ups and sign-in, and owns the exit-node process.
 - **`Model.js`** holds the pure formatting logic, tested under Node.
 
 ### Security and privacy
 
 - **No secrets.** Signed out, every `orble` command starts a browser sign-in, so the background poll must not run one. The helper checks only *whether* `~/.config/orble/config.json` has a token, never reading it out, and reports "Not signed in" without calling the CLI. If the CLI starts a sign-in anyway (an expired token), the call is ended at once.
-- **No shell strings, strict input.** Every process gets a fixed argument list. Box names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`, fingerprints `SHA256:` plus 43 base64 characters, key files must be `.pub` files directly in `~/.ssh` (links resolved), and top-ups whole dollars from 10 to 500. Nothing can become a flag (the CLI itself would happily try to delete a box named `--help`).
-- **No prompts in the background.** The CLI gets empty stdin, `rm` always gets `-y`, `keys add` always gets a file, and `new` and `fork` are refused at zero credit.
-- **Asks first:** delete, key removal and top-ups. Top-ups only ever run in a visible terminal.
+- **No shell strings, strict input.** Every process gets a fixed argument list. Box and snapshot names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`, ports 1 to 65535, fingerprints `SHA256:` plus 43 base64 characters, key files must be `.pub` files directly in `~/.ssh` (links resolved), and top-ups whole dollars from 10 to 500. Nothing can become a flag (the CLI itself would happily try to delete a box named `--help`).
+- **No prompts in the background.** The CLI gets empty stdin, `rm` and `snapshot rm` always get `-y` (without it, `snapshot rm` reads the empty stdin as no, keeps the snapshot and still exits 0), `keys add` always gets a file, and `new`, `new --from` and `fork` are refused at zero credit.
+- **Asks first:** deleting a box or snapshot, forking, key removal, public ports and top-ups. Top-ups only ever run in a visible terminal.
 - **Plain text only**, for names and CLI output.
-- **Network use:** only what the `orble` CLI does: 3 requests every 2 minutes in the background, every 10 s while the panel is open, plus the actions you click. No cache or state files.
+- **Network use:** only what the `orble` CLI does: 4 requests every 2 minutes in the background (plus one for the expanded box's ports when the panel opens), every 10 s while the panel is open, plus the actions you click. No cache or state files.
 
 ## Troubleshooting
 

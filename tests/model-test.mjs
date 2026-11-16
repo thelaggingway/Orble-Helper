@@ -6,7 +6,7 @@ import vm from "node:vm"
 
 const src = readFileSync(fileURLToPath(new URL("../Model.js", import.meta.url)), "utf8").replace(/^\.pragma library\s*$/m, "")
 const M = {}
-vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
+vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText, validPort, validSnapshotName, sizesFrom, snapshotLine, fromTooltip, portAccess })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
 
 let n = 0
 const t = (name, fn) => { fn(); n++ }
@@ -117,5 +117,33 @@ t("exit node", () => {
 t("icons are single code points", () => {
   for (const [k, v] of Object.entries(M.icons)) assert.equal([...v].length, 1, k)
 })
+
+t("ports", () => {
+  for (const ok of ["1", "80", "8080", "65535", " 3000 "]) assert.ok(M.validPort(ok), ok)
+  for (const bad of ["", "0", "65536", "-1", "80a", "8.0", "--off", null]) assert.ok(!M.validPort(bad), String(bad))
+  assert.equal(M.portAccess({ access: "public" }), "anyone with the address")
+  assert.equal(M.portAccess({ access: "signin" }), "your Orble account only")
+  assert.match(M.confirmText("port-public", "nvbg:8080"), /nvbg:8080.*Anyone/)
+  assert.equal(M.confirmButton("port-public"), "Share")
+})
+
+t("snapshots", () => {
+  assert.ok(M.validSnapshotName("") && M.validSnapshotName("plugin-test") && M.validSnapshotName(" x1 "))
+  for (const bad of ["-y", "a b", "$(id)", "--help"]) assert.ok(!M.validSnapshotName(bad), bad)
+  const sn = { name: "plugin-test", box: "nvbg", state: "ready", size: "m", vcpus: 4, memGiB: 8, disk: "409 MB", created: "now" }
+  assert.equal(M.snapshotLine(sn), "from nvbg · M · 4/8 · 409 MB · now")
+  assert.equal(M.snapshotLine({ ...sn, state: "saving" }), "from nvbg · M · 4/8 · 409 MB · now · saving")
+  assert.deepEqual(Array.from(M.sizesFrom(sn), o => o.value), ["m", "l"])
+  assert.deepEqual(Array.from(M.sizesFrom({ vcpus: 2 }), o => o.value), ["s", "m", "l"])
+  assert.match(M.fromTooltip(sn, "m"), /--from plugin-test -s m: its files and running programs/)
+  assert.match(M.fromTooltip(sn, "l"), /files only/)
+  assert.match(M.confirmText("snapshot-rm", "plugin-test"), /plugin-test.*gone for good/)
+  assert.equal(M.progressText["new-from"], "Creating")
+  const st = M.parseStatus('{"ok":true,"snapshots":[{"name":"a"}],"snapshotsSupported":true}')
+  assert.equal(st.snapshots.length, 1)
+  assert.equal(st.snapshotsSupported, true)
+  assert.equal(M.parseStatus('{"ok":true}').snapshotsSupported, false)
+})
+
 
 console.log(`model-test: ${n} groups passed`)

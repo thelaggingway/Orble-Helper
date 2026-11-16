@@ -30,7 +30,7 @@ for f in m["barWidget"]["schema"]:
 
 # Destructive and paying verbs stay behind the confirm dialog.
 line=$(grep 'readonly property var confirmVerbs' "$ROOT/Panel.qml") || fail "confirmVerbs missing"
-for v in rm keys-rm topup; do
+for v in rm keys-rm topup snapshot-rm port-public; do
   [[ $line == *"\"$v\""* ]] || fail "confirmVerbs lacks $v"
 done
 

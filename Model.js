@@ -24,7 +24,11 @@ var icons = {
   monitor: glyph(0xF0379),
   update: glyph(0xF06B0),
   login: glyph(0xF0342),
-  coffee: glyph(0xF0176)
+  coffee: glyph(0xF0176),
+  camera: glyph(0xF0100),
+  share: glyph(0xF0496),
+  open: glyph(0xF03CC),
+  lock: glyph(0xF033E)
 }
 
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
@@ -33,6 +37,15 @@ var FP_RE = /^SHA256:[A-Za-z0-9+\/]{43}$/
 function validName(name) { return NAME_RE.test(String(name || "")) }
 function validFingerprint(fp) { return FP_RE.test(String(fp || "")) }
 
+// A port to share: whole number 1 to 65535, as text from the field.
+function validPort(p) {
+  p = String(p || "").trim()
+  return /^\d{1,5}$/.test(p) && Number(p) >= 1 && Number(p) <= 65535
+}
+
+// Snapshot names go to the CLI as an argument too; empty lets the CLI pick one.
+function validSnapshotName(n) { n = String(n || "").trim(); return n === "" || validName(n) }
+
 function parseStatus(text) {
   try {
     var d = JSON.parse(String(text || ""))
@@ -40,6 +53,8 @@ function parseStatus(text) {
     if (!Array.isArray(d.boxes)) d.boxes = []
     if (!Array.isArray(d.keys)) d.keys = []
     if (!Array.isArray(d.localKeys)) d.localKeys = []
+    if (!Array.isArray(d.snapshots)) d.snapshots = []
+    d.snapshotsSupported = d.snapshotsSupported === true
     if (typeof d.viewer !== "string") d.viewer = ""
     return d
   } catch (e) {
@@ -174,6 +189,40 @@ function sizeTooltip(v) {
   return "orble new -s " + o.value + ": " + p[0] + " vCPU, " + p[1] + " GiB, 64 GiB disk · $" + o.hourUSD + "/h while running, $0 suspended"
 }
 
+// Sizes a box made from this snapshot can have: its own, or larger (files only, no running programs).
+function sizesFrom(snap) {
+  var c = Number(snap && snap.vcpus) || 0
+  return sizeOptions.filter(function(o) { return Number(o.label.split(" · ")[1].split("/")[0]) >= c })
+}
+
+function snapshotSize(snap) {
+  var o = sizeOption(snap && snap.size)
+  return o ? o.label : size(snap || {})
+}
+
+function snapshotLine(snap) {
+  var parts = []
+  if (snap.box) parts.push("from " + snap.box)
+  var sz = snapshotSize(snap)
+  if (sz) parts.push(sz)
+  if (snap.disk) parts.push(snap.disk)
+  if (snap.created) parts.push(snap.created)
+  if (snap.state && snap.state !== "ready") parts.push(snap.state)
+  return parts.join(" · ")
+}
+
+// "Create M box" for a snapshot; a larger size than the snapshot's gets its files only.
+function fromTooltip(snap, v) {
+  var same = snap && (snap.size === v || !snap.size)
+  return "orble new --from " + (snap ? snap.name : "") + " -s " + v + ": "
+    + (same ? "its files and running programs" : "larger than the snapshot, so its files only")
+    + " · " + sizeTooltip(v).split(" · ")[1]
+}
+
+function portAccess(p) {
+  return p && p.access === "public" ? "anyone with the address" : "your Orble account only"
+}
+
 function sizeLabel(v) {
   var o = sizeOption(v)
   return o ? o.label : ""
@@ -189,6 +238,8 @@ function confirmText(verb, target, extra) {
   case "rm": return "Delete box " + target + "? Its disk and everything on it are gone for good."
   case "keys-rm": return "Remove SSH key " + target + " from your Orble account? New boxes won't accept it."
   case "fork": return "Fork " + target + " into a new box? It carries on from " + target + ", running programs included, and is billed like any box."
+  case "snapshot-rm": return "Delete snapshot " + target + "? Boxes made from it keep running; the snapshot itself is gone for good."
+  case "port-public": return "Share port " + target + " publicly? Anyone with the address can reach it, no sign-in needed."
   case "topup": return "Add " + target + " of Orble credit? orble topup opens in a terminal; follow it there to pay."
   default: return verb + " " + target + "?"
   }
@@ -199,6 +250,8 @@ function confirmButton(verb) {
   if (verb === "keys-rm") return "Remove"
   if (verb === "topup") return "Continue"
   if (verb === "fork") return "Fork"
+  if (verb === "snapshot-rm") return "Delete"
+  if (verb === "port-public") return "Share"
   return "Confirm"
 }
 
@@ -246,5 +299,6 @@ function ago(nowSec, thenSec) {
 var progressText = {
   "suspend": "Suspending", "resume": "Resuming", "rm": "Deleting", "vnc": "Opening desktop",
   "desktop-off": "Turning desktop off", "new": "Creating", "keys-add": "Adding", "keys-rm": "Removing",
-  "update": "Updating", "fork": "Forking"
+  "update": "Updating", "fork": "Forking", "snapshot": "Saving snapshot", "snapshot-rm": "Deleting",
+  "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing"
 }
