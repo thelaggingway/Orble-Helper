@@ -7,7 +7,7 @@ Guide for coding agents (and people) changing this plugin. Read [README.md](READ
 | Path | Role |
 |---|---|
 | `manifest.json` | Omarchy manifest: id `thelaggingway.orble-helper`, `bar-widget`, settings schema. |
-| `Panel.qml` | Bar icon + `KeyboardPanel`: state, polling, action dispatch, confirm dialog, terminal launches, the exit-node `Process`. Inline components: `PlainText`, `StateDot`, `ActionButton`, `Chips`, `CreditCard`, `ExitNodeCard`, `BoxRow`, `PortRow`, `SnapshotRow`, `KeyRow`, `LocalKeyRow`. Text fields (snapshot name, port) set `editorFocus`, which blocks the `PanelKeyCatcher` while they have focus. |
+| `Panel.qml` | Bar icon + `KeyboardPanel`: state, polling, action dispatch, confirm dialog, terminal launches, the exit-node `Process`. Inline components: `KeyField`, `PlainText`, `StateDot`, `ActionButton`, `Chips`, `CreditCard`, `ExitNodeCard`, `BoxRow`, `PortRow`, `SnapshotRow`, `KeyRow`, `LocalKeyRow`. Text entry (snapshot name, port) is `KeyField`, which sets `editorFocus`, which blocks the `PanelKeyCatcher` while they have focus. |
 | `Model.js` | `.pragma library` pure helpers, run under Node in tests. |
 | `bin/orble-panel` | Python 3 stdlib, `python3 -I`. `status`, `ports <box>`, `action <verb>`, `exit-node`, `keep-awake`, and the terminal commands `ssh`, `desktop`, `topup`, `login`. The only code that runs `orble`. |
 | `tests/` | `run.sh` → `source-test.sh` (static rules), `helper-test.sh` (fake `orble` on PATH, fake `~/.ssh` and config), `model-test.mjs`. `marketplace-scan.mjs` runs the Omarchy marketplace's security baseline (CI clones the marketplace). |
@@ -23,7 +23,7 @@ bin/orble-panel status | jq .      # read-only, safe against the real account
 omarchy plugin validate .
 ```
 
-To check the expanded box or the keys list, temporarily set the `expandedBox` / `keysOpen` defaults in `Panel.qml`, restart the shell, screenshot (`grim -o <output>`), and put them back.
+To check the expanded box, temporarily set the `expandedBox` default in `Panel.qml`, restart the shell, screenshot (`grim -o <output>`), and put them back.
 
 **Don't run actions against a real account** unless the user asks; `status` is the only read-only command. `helper-test.sh` covers the argv of every action against a fake CLI.
 
@@ -41,6 +41,7 @@ To check the expanded box or the keys list, temporarily set the `expandedBox` / 
 10. **Keep awake** is one long-running `keep-awake <box>...` helper owned by `awakeProc`; changing the list restarts it (SIGTERM, then `onExited` starts the new list). It never loops on its own failures, stops at a sign-in prompt (exit 3), and suspending a box from the panel drops that box first, or the reconnect would resume it.
 11. **Demo mode** guards `runAction` and `openTerminal`; the exit node runs the helper's fake `exit-node --demo`.
 12. No caches, state files or secrets.
+13. **No native text inputs** (`TextField`, `TextInput`, `TextEdit`, `TextArea`): a writable one fetches the clipboard on every clipboard change with no size limit (marketplace review on #14930). Use `KeyField`, which takes typed keys only (filtered by its `allowed` regex) and has no paste. `source-test.sh` enforces this.
 
 ## CLI facts this depends on
 

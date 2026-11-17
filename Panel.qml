@@ -47,8 +47,6 @@ Panel {
   property bool newOpen: false
   property string newSize: "s"
   property string topupChoice: "25"
-  property bool keysOpen: false
-  property bool snapshotsOpen: false
   // The box whose "save a snapshot" row is open, and the name typed there (empty: the CLI picks).
   property string snapFor: ""
   property string snapName: ""
@@ -655,33 +653,21 @@ Panel {
             wrapMode: Text.Wrap
           }
 
-          // ---------- snapshots ----------
-          Item {
+          // ---------- snapshots (always listed, like boxes) ----------
+          PanelSectionHeader {
             visible: root.hasSnapshots
-            width: parent.width
-            implicitHeight: snapsHeader.implicitHeight
-
-            PanelSectionHeader {
-              id: snapsHeader
-              text: "SNAPSHOTS " + (root.snapshotsOpen ? "▾" : "▸") + "  " + root.snapshots.length
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.snapshotsOpen = !root.snapshotsOpen
-            }
+            text: "SNAPSHOTS  " + root.snapshots.length
+            foreground: root.foreground
+            fontFamily: root.fontFamily
           }
 
           Repeater {
-            model: root.snapshotsOpen ? root.snapshots : []
+            model: root.hasSnapshots ? root.snapshots : []
             delegate: SnapshotRow {}
           }
 
           PlainText {
-            visible: root.hasSnapshots && root.snapshotsOpen && root.snapshots.length === 0
+            visible: root.hasSnapshots && root.snapshots.length === 0
             width: parent.width
             wrapMode: Text.Wrap
             text: "No snapshots. Open a box and use Snapshot to save one; new boxes can start from it."
@@ -696,39 +682,27 @@ Panel {
 
           PanelSeparator { visible: root.healthy; foreground: root.foreground }
 
-          // ---------- ssh keys ----------
-          Item {
+          // ---------- ssh keys (always listed) ----------
+          PanelSectionHeader {
             visible: root.healthy
-            width: parent.width
-            implicitHeight: keysHeader.implicitHeight
-
-            PanelSectionHeader {
-              id: keysHeader
-              text: "SSH KEYS " + (root.keysOpen ? "▾" : "▸") + "  " + root.keys.length
-                + (root.newLocalKeys.length ? "  · " + root.newLocalKeys.length + " local not added" : "")
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.keysOpen = !root.keysOpen
-            }
+            text: "SSH KEYS  " + root.keys.length
+              + (root.newLocalKeys.length ? "  · " + root.newLocalKeys.length + " local not added" : "")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
           }
 
           Repeater {
-            model: root.keysOpen ? root.keys : []
+            model: root.healthy ? root.keys : []
             delegate: KeyRow {}
           }
 
           Repeater {
-            model: root.keysOpen ? root.newLocalKeys : []
+            model: root.healthy ? root.newLocalKeys : []
             delegate: LocalKeyRow {}
           }
 
           PlainText {
-            visible: root.healthy && root.keysOpen && root.keys.length === 0 && root.newLocalKeys.length === 0
+            visible: root.healthy && root.keys.length === 0 && root.newLocalKeys.length === 0
             width: parent.width
             wrapMode: Text.Wrap
             text: "No keys on the account and no .pub files in ~/.ssh. Make one with ssh-keygen -t ed25519."
@@ -805,6 +779,61 @@ Panel {
   }
 
   // ---------- components ----------
+
+  // A one-line entry that takes typed keys only. It deliberately has no Qt text input
+  // (TextField/TextInput): a writable one fetches the clipboard on every clipboard change,
+  // unbounded, so a hostile clipboard owner could stall the shell. No paste here, by design.
+  component KeyField: Rectangle {
+    id: kf
+    property string text: ""
+    property string placeholderText: ""
+    property int maximumLength: 63
+    property var allowed: /[A-Za-z0-9._-]/
+    signal edited(string value)
+    signal accepted()
+    signal escaped()
+
+    implicitHeight: kfText.implicitHeight + Style.space(6)
+    radius: Style.space(4)
+    color: "transparent"
+    border.width: 1
+    border.color: activeFocus ? root.accent : (kfMouse.containsMouse ? root.foreground : root.muted)
+    activeFocusOnTab: true
+    onActiveFocusChanged: root.editorFocus = activeFocus
+
+    PlainText {
+      id: kfText
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.space(6)
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      text: kf.text !== "" ? kf.text + (kf.activeFocus ? "▏" : "") : (kf.activeFocus ? "▏" : kf.placeholderText)
+      color: kf.text !== "" ? root.foreground : root.muted
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideLeft
+    }
+
+    MouseArea {
+      id: kfMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.IBeamCursor
+      onClicked: kf.forceActiveFocus()
+    }
+
+    Keys.onPressed: function(event) {
+      if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { kf.accepted(); event.accepted = true; return }
+      if (event.key === Qt.Key_Escape) { kf.escaped(); event.accepted = true; return }
+      if (event.key === Qt.Key_Backspace) { kf.edited(kf.text.slice(0, -1)); event.accepted = true; return }
+      if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return
+      var t = event.text
+      if (t.length === 1 && kf.allowed.test(t) && kf.text.length < kf.maximumLength) {
+        kf.edited(kf.text + t)
+        event.accepted = true
+      }
+    }
+  }
 
   component PlainText: Text {
     textFormat: Text.PlainText
@@ -1234,21 +1263,16 @@ Panel {
         visible: root.snapFor === brow.b.name && !brow.isBusy
         spacing: Style.space(6)
 
-        TextField {
+        KeyField {
           id: snapField
           width: Style.space(170)
           anchors.verticalCenter: parent.verticalCenter
           placeholderText: "name (optional)"
           text: root.snapName
           maximumLength: 63
-          font.pixelSize: Style.font.caption
-          verticalPadding: Style.space(3)
-          foreground: root.foreground
-          accent: root.accent
-          onTextEdited: root.snapName = text
-          onActiveFocusChanged: root.editorFocus = activeFocus
+          onEdited: function(v) { root.snapName = v }
           onAccepted: root.saveSnapshot(brow.b.name)
-          Keys.onEscapePressed: { root.snapFor = ""; keyCatcher.forceActiveFocus() }
+          onEscaped: { root.snapFor = ""; keyCatcher.forceActiveFocus() }
         }
 
         ActionButton {
@@ -1298,23 +1322,17 @@ Panel {
       Row {
         spacing: Style.space(6)
 
-        TextField {
+        KeyField {
           id: portField
           width: Style.space(80)
           anchors.verticalCenter: parent.verticalCenter
           placeholderText: "port"
           text: root.expandedBox === brow.b.name ? root.portInput : ""
           maximumLength: 5
-          inputMethodHints: Qt.ImhDigitsOnly
-          validator: IntValidator { bottom: 1; top: 65535 }
-          font.pixelSize: Style.font.caption
-          verticalPadding: Style.space(3)
-          foreground: root.foreground
-          accent: root.accent
-          onTextEdited: root.portInput = text
-          onActiveFocusChanged: root.editorFocus = activeFocus
+          allowed: /[0-9]/
+          onEdited: function(v) { root.portInput = v }
           onAccepted: root.sharePort(brow.b.name, root.portInput, false)
-          Keys.onEscapePressed: { root.portInput = ""; keyCatcher.forceActiveFocus() }
+          onEscaped: { root.portInput = ""; keyCatcher.forceActiveFocus() }
         }
 
         ActionButton {

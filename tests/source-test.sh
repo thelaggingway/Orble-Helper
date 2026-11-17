@@ -50,4 +50,8 @@ grep -q 'bool(d.get("token"))' "$ROOT/bin/orble-panel" || fail "signed_in check 
 [[ -x $ROOT/bin/orble-panel ]] || fail "bin/orble-panel is not executable"
 python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$ROOT/bin/orble-panel" || fail "helper syntax"
 
+# No writable Qt text inputs: they read the clipboard on every change, unbounded
+# (marketplace review on #14930). Text entry goes through KeyField.
+if grep -nE '^\s*(TextField|TextInput|TextEdit|TextArea)\s*\{' "$ROOT/Panel.qml"; then fail "native text input in Panel.qml (use KeyField)"; fi
+
 echo "source-test: ok"
