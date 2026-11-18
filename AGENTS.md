@@ -43,6 +43,12 @@ To check the expanded box, temporarily set the `expandedBox` default in `Panel.q
 12. No caches, state files or secrets.
 13. **No native text inputs** (`TextField`, `TextInput`, `TextEdit`, `TextArea`): a writable one fetches the clipboard on every clipboard change with no size limit (marketplace review on #14930). Use `KeyField`, which takes typed keys only (filtered by its `allowed` regex) and has no paste. `source-test.sh` enforces this.
 
+## Current CLI additions
+
+Verified against `bc07c8bf`. `ls --json` uses `name` as the stable identity and `alias` as the display name. `snapshots --json` keeps the original `name` after renaming, adds `alias`, and marks built-in entries with `gallery: true`. A private shared port may be labeled `private` or `signin`, depending on the build.
+
+`detail egress <box>`, `detail networks`, and `detail secrets` return validated, on-demand JSON projections of the CLI's text output. Network actions use the stable box name, and the panel offers aliases for picking boxes. The separate `secret-set` command requires a terminal and accepts metadata only. The CLI handles the hidden prompt. Keep secret values and generated placeholders out of plugin status, logs, and notifications.
+
 ## CLI facts this depends on
 
 Checked against the `orble` CLI of 2026-11-16 (`a456dba3`, which added `snapshot`, `snapshots` and `port`; first written against `515f19f2`). `ls --json` and `snapshots --json` exist; `account`, `keys` and `port` have no JSON, so confirm their layouts after CLI updates. The full command list is orble.tech/docs?tab=cli (also orble.tech/docs.md).

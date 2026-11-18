@@ -37,7 +37,9 @@ Panel {
   readonly property var demoArg: demo ? ["--demo"] : []
 
   property var status: null
+  property var deferredStatus: null
   property bool loading: false
+  property bool statusReload: false
   property real lastRefreshAt: 0
   property real now: Date.now() / 1000
 
@@ -56,6 +58,7 @@ Panel {
   // box -> [{port, access, url}] from `orble-panel ports <box>`, loaded when a box is expanded.
   property var ports: ({})
   property var portsLoading: ({})
+  property var portReload: ({})
   property string portInput: ""
   // While a text field has focus, keys go to it instead of the panel's shortcuts.
   property bool editorFocus: false
@@ -64,6 +67,72 @@ Panel {
   // target -> verb for actions in flight
   property var pending: ({})
   readonly property int pendingCount: Object.keys(pending).length
+
+  property string newName: ""
+  property string proSection: ""
+  property string egressBox: ""
+  property string renameBox: ""
+  property string renameSnapshot: ""
+  property var drafts: ({})
+  property var details: ({})
+  property var detailRequests: ({})
+  property int detailSequence: 0
+  readonly property bool modernCli: healthy && status.modernCli === true
+
+
+  function boxLabel(name) {
+    for (var i = 0; i < boxes.length; ++i)
+      if (boxes[i].name === name) return boxes[i].alias || name
+    return name
+  }
+
+  function loadDetail(kind, target) {
+    var key = kind + (target ? ":" + target : "")
+    var args = [root.helper, "detail", kind]
+    if (target) args.push(target)
+    var seq = ++root.detailSequence
+    var proc = detailComponent.createObject(root, { key: key, sequence: seq, command: args.concat(root.demoArg) })
+    if (!proc) return
+    setMap("detailRequests", key, seq)
+    setMap("details", key, { loading: true })
+    proc.running = true
+  }
+
+  function applyDetail(key, seq, text) {
+    if (root.detailRequests[key] !== seq) return
+    setMap("detailRequests", key, false)
+    var d
+    try { d = JSON.parse(String(text || "")) } catch (e) { d = null }
+    setMap("details", key, d || { error: "Could not load Orble details." })
+  }
+
+  function invalidateDetail(key) {
+    setMap("details", key, false)
+    setMap("detailRequests", key, false)
+  }
+
+  function toggleEgress(box) {
+    if (root.egressBox) invalidateDetail("egress:" + root.egressBox)
+    root.egressBox = root.egressBox === box ? "" : box
+    if (root.egressBox) loadDetail("egress", root.egressBox)
+  }
+
+  function togglePro(kind) {
+    if (root.proSection) invalidateDetail(root.proSection)
+    root.proSection = root.proSection === kind ? "" : kind
+    if (root.proSection) loadDetail(kind, "")
+  }
+
+  function submitSecret(name, host, header, format, all, intercept, boxes, replacing) {
+    var mode = (all ? "all" : "scoped") + (intercept ? "-intercept" : "")
+    var args = ["secret-set", name, host, header, format, mode].concat(all ? [] : boxes)
+    if (replacing || all || intercept)
+      request("secret-set", name, args, (replacing ? " This replaces the existing value, scope, header settings, and interception choice." : "")
+        + (all ? " This applies to every box on your account." : "")
+        + (intercept ? " HTTPS interception adds Orble’s CA to the selected boxes." : ""))
+    else
+      openTerminal(args)
+  }
 
   // ---------- exit node ----------
   property var exitBoxes: []
@@ -98,8 +167,11 @@ Panel {
 
   // ---------- data ----------
 
-  function refresh() {
-    if (statusProc.running) return
+  function refresh(afterWrite) {
+    if (statusProc.running) {
+      if (afterWrite) root.statusReload = true
+      return
+    }
     root.loading = true
     statusProc.running = true
   }
@@ -108,6 +180,15 @@ Panel {
     root.loading = false
     var next = Model.parseStatus(text)
     if (!next) return
+    if (root.editorFocus && next.ok) {
+      root.deferredStatus = next
+      return
+    }
+    root.deferredStatus = null
+    acceptStatus(next)
+  }
+
+  function acceptStatus(next) {
     root.status = next
     root.lastRefreshAt = Date.now() / 1000
     root.now = root.lastRefreshAt
@@ -123,8 +204,12 @@ Panel {
 
   // ----- shared ports (per box, on demand: `orble port <box>` has no JSON and one call per box) -----
 
-  function loadPorts(name) {
-    if (!Model.validName(name) || root.portsLoading[name]) return
+  function loadPorts(name, afterWrite) {
+    if (!Model.validName(name)) return
+    if (root.portsLoading[name]) {
+      if (afterWrite) setMap("portReload", name, true)
+      return
+    }
     var proc = portsComponent.createObject(root, { box: name, command: [root.helper, "ports", name].concat(root.demoArg) })
     if (!proc) return
     setMap("portsLoading", name, true)
@@ -133,6 +218,11 @@ Panel {
 
   function applyPorts(name, text) {
     setMap("portsLoading", name, false)
+    if (root.portReload[name]) {
+      setMap("portReload", name, false)
+      loadPorts(name)
+      return
+    }
     var d = null
     try { d = JSON.parse(String(text || "")) } catch (e) { d = null }
     if (!d || d.box !== name) return
@@ -210,8 +300,16 @@ Panel {
   function finishAction(target) {
     setPending(target, "")
     var m = /^port:([^:]+):/.exec(target)
-    if (m) loadPorts(m[1])
-    refresh()
+    if (m) loadPorts(m[1], true)
+    if (target === "networks" || target === "secrets") {
+      invalidateDetail(target)
+      if (root.opened && root.proSection === target) loadDetail(target, "")
+    }
+    if (target.indexOf("egress:") === 0) {
+      invalidateDetail(target)
+      if (root.opened && root.egressBox === target.slice(7)) loadDetail("egress", root.egressBox)
+    }
+    refresh(true)
   }
 
   // A helper subcommand in a terminal window: ssh, desktop, topup, login.
@@ -222,7 +320,7 @@ Panel {
     wakeRefresh.restart()
   }
 
-  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public"]
+  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public", "resize", "net-block", "net-open", "net-allow", "net-deny", "net-rm", "net-delete", "net-leave", "secret-rm", "secret-set"]
 
   // Destructive or paying verbs go through the confirm dialog first.
   function request(verb, target, args, extra) {
@@ -247,6 +345,14 @@ Panel {
       openTerminal(["topup"].concat(c.args))
     } else if (c.verb === "port-public") {
       runAction(c.verb, c.args, "port:" + c.args[0] + ":" + c.args[1])
+    } else if (c.verb === "secret-set") {
+      openTerminal(c.args)
+    } else if (c.verb === "net-delete" || c.verb === "net-leave") {
+      runAction(c.verb, c.args, "networks")
+    } else if (c.verb === "secret-rm") {
+      runAction(c.verb, c.args, "secrets")
+    } else if (["net-block", "net-open", "net-allow", "net-deny", "net-rm"].indexOf(c.verb) >= 0) {
+      runAction(c.verb, c.args, "egress:" + c.args[0])
     } else if (c.verb === "snapshot-rm") {
       runAction(c.verb, c.args, "snap:" + c.args[0])
     } else {
@@ -262,7 +368,10 @@ Panel {
   // size: "s", "m" or "l" (orble new -s); empty keeps the CLI's default.
   function newBox(size) {
     root.newOpen = false
-    runAction("new", size ? [size] : [], "new")
+    if (size && root.modernCli && Model.validName(root.newName)) {
+      runAction("new-named", [size, root.newName], "new")
+      root.newName = ""
+    } else runAction("new", size ? [size] : [], "new")
   }
 
   function ssh(name) {
@@ -290,6 +399,12 @@ Panel {
   }
 
   function toggleBox(b) {
+    if (root.egressBox) {
+      invalidateDetail("egress:" + root.egressBox)
+      root.egressBox = ""
+    }
+    if (root.renameBox) setMap("drafts", "rename:" + root.renameBox, false)
+    root.renameBox = ""
     root.expandedBox = root.expandedBox !== b.name ? b.name : ""
     root.snapFor = ""
     root.portInput = ""
@@ -336,7 +451,16 @@ Panel {
     awakeProc.running = true
   }
 
-  onDemoChanged: { stopExit(); setAwake([]); root.status = null; refresh() }
+  onEditorFocusChanged: {
+    if (!editorFocus && deferredStatus) Qt.callLater(function() {
+      if (root.editorFocus || !root.deferredStatus) return
+      var next = root.deferredStatus
+      root.deferredStatus = null
+      root.acceptStatus(next)
+    })
+  }
+
+  onDemoChanged: { stopExit(); setAwake([]); root.status = null; root.deferredStatus = null; root.details = {}; root.detailRequests = {}; root.proSection = ""; root.egressBox = ""; refresh() }
 
   onOpenedChanged: {
     if (!opened) {
@@ -344,11 +468,15 @@ Panel {
       root.topupOpen = false
       root.snapFor = ""
       root.fromSnap = ""
+      if (root.proSection) invalidateDetail(root.proSection)
+      if (root.egressBox) invalidateDetail("egress:" + root.egressBox)
       return
     }
     root.now = Date.now() / 1000
     if (root.now - root.lastRefreshAt > 8) refresh()
     if (root.expandedBox) loadPorts(root.expandedBox)
+    if (root.proSection) loadDetail(root.proSection, "")
+    if (root.egressBox) loadDetail("egress", root.egressBox)
   }
 
   IpcHandler {
@@ -367,7 +495,13 @@ Panel {
     id: statusProc
     command: [root.helper, "status"].concat(root.demoArg)
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyStatus(text) }
-    onExited: function(exitCode) { if (exitCode !== 0) root.loading = false }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.loading = false
+      if (root.statusReload) {
+        root.statusReload = false
+        Qt.callLater(function() { root.refresh() })
+      }
+    }
   }
 
   Process {
@@ -408,6 +542,18 @@ Panel {
       property string box: ""
       // stdout always finishes (empty on a failure), so it clears the loading mark and cleans up.
       stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.applyPorts(box, text); destroy() } }
+    }
+  }
+
+  Component {
+    id: detailComponent
+    Process {
+      property string key
+      property int sequence
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: { root.applyDetail(key, sequence, text); destroy() }
+      }
     }
   }
 
@@ -603,9 +749,19 @@ Panel {
               iconText: Model.icons.plus
               foreground: root.accent
               text: Model.createLabel(root.newSize)
+              enabled: !root.modernCli || root.newName === "" || Model.validName(root.newName)
               tooltipText: Model.sizeTooltip(root.newSize)
               onClicked: root.newBox(root.newSize)
             }
+          }
+
+          KeyField {
+            visible: root.healthy && root.newOpen && root.modernCli
+            width: parent.width
+            text: root.newName
+            placeholderText: "Box name (optional)"
+            onEdited: function(v) { root.newName = v }
+            onAccepted: if (root.newName === "" || Model.validName(root.newName)) root.newBox(root.newSize)
           }
 
           // ---------- credit ----------
@@ -627,7 +783,7 @@ Panel {
           }
 
           Row {
-            visible: root.pending["new"] === "new"
+            visible: !!root.pending["new"]
             spacing: Style.space(10)
             leftPadding: Style.space(6)
             StateDot { tone: "busy"; anchors.verticalCenter: parent.verticalCenter }
@@ -676,6 +832,16 @@ Panel {
           }
 
           PanelSeparator { visible: root.healthy; foreground: root.foreground }
+
+          Flow {
+            visible: root.healthy
+            width: parent.width
+            spacing: Style.space(6)
+            ActionButton { text: "Private networks"; active: root.proSection === "networks"; onClicked: root.togglePro("networks") }
+            ActionButton { text: "Secrets"; active: root.proSection === "secrets"; onClicked: root.togglePro("secrets") }
+          }
+          NetworksCard { visible: root.healthy && root.proSection === "networks"; width: parent.width }
+          SecretsCard { visible: root.healthy && root.proSection === "secrets"; width: parent.width }
 
           // ---------- exit node ----------
           ExitNodeCard { visible: root.healthy }
@@ -876,6 +1042,368 @@ Panel {
     color: root.muted
     font.pixelSize: Style.font.caption
   }
+
+  component DetailMessage: PlainText {
+    required property var result
+    width: parent.width
+    visible: text !== ""
+    text: !result || result.loading ? "Loading…" : result.error || ""
+    color: root.muted
+    wrapMode: Text.Wrap
+  }
+
+  component NamedAction: Row {
+    id: named
+    property string placeholder
+    property string verb
+    property string target
+    property var prefix: []
+    property string draft: ""
+    property string storageKey: ""
+    readonly property string fieldValue: storageKey ? (root.drafts[storageKey] || "") : draft
+    function store(value) {
+      if (storageKey) root.setMap("drafts", storageKey, value || false)
+      else draft = value
+    }
+    property string buttonText: "Save"
+    signal submitted()
+    spacing: Style.space(6)
+    function submit() {
+      if (!Model.validName(fieldValue) || root.pending[target]) return
+      root.runAction(verb, prefix.concat([fieldValue]), target)
+      store("")
+      submitted()
+    }
+    KeyField {
+      width: Math.max(80, named.width - saveNamed.implicitWidth - named.spacing)
+      text: named.fieldValue
+      placeholderText: named.placeholder
+      onEdited: function(v) { named.store(v) }
+      onAccepted: named.submit()
+    }
+    ActionButton {
+      id: saveNamed
+      text: named.buttonText
+      enabled: Model.validName(named.fieldValue) && !root.pending[named.target]
+      onClicked: named.submit()
+    }
+  }
+
+  component EgressCard: Column {
+    id: egress
+    required property string box
+    readonly property string detailKey: "egress:" + box
+    readonly property var result: root.details[detailKey]
+    readonly property var policy: result && result.ok ? result.data : null
+    readonly property bool busy: !!root.pending[detailKey]
+    readonly property bool canEdit: !!policy && !busy
+      && !(root.exitOn && (!root.exitBoxes.length || root.exitBoxes.indexOf(box) >= 0))
+    readonly property string entry: root.drafts[detailKey] || ""
+    spacing: Style.space(6)
+    Row {
+      spacing: Style.space(6)
+      PlainText { text: egress.policy ? "Egress · " + (egress.policy.mode === "blocked" ? "Allowlist only" : "Open by default") : "Egress" }
+      ActionButton { text: "Refresh"; enabled: !egress.busy; onClicked: root.loadDetail("egress", egress.box) }
+    }
+    DetailMessage { result: egress.result }
+    PlainText {
+      width: parent.width
+      visible: !!egress.policy
+      text: "Rules carry over to forks and snapshots. Egress rules and an exit node cannot be used together."
+      color: root.muted
+      wrapMode: Text.Wrap
+    }
+    Repeater {
+      model: egress.policy ? egress.policy.rules : []
+      delegate: Row {
+        required property var modelData
+        width: egress.width
+        spacing: Style.space(6)
+        PlainText { width: Math.max(80, parent.width - removeRule.implicitWidth - parent.spacing); text: parent.modelData.kind + "  " + parent.modelData.entry }
+        ActionButton {
+          id: removeRule
+          text: "Remove"
+          enabled: egress.canEdit
+          onClicked: root.request("net-rm", egress.box, [egress.box, parent.modelData.entry], parent.modelData.kind + " " + parent.modelData.entry)
+        }
+      }
+    }
+    KeyField {
+      visible: !!egress.policy
+      enabled: egress.canEdit
+      width: parent.width
+      maximumLength: 255
+      allowed: /[A-Za-z0-9.*\/-]/
+      placeholderText: "Domain, wildcard, IPv4 or CIDR"
+      text: egress.entry
+      onEdited: function(v) { root.setMap("drafts", egress.detailKey, v || false) }
+    }
+    Flow {
+      visible: !!egress.policy
+      width: parent.width
+      spacing: Style.space(6)
+      ActionButton { text: "Allow"; enabled: egress.canEdit && !!egress.entry; onClicked: root.request("net-allow", egress.box, [egress.box, egress.entry], egress.entry) }
+      ActionButton { text: "Deny"; enabled: egress.canEdit && !!egress.entry; onClicked: root.request("net-deny", egress.box, [egress.box, egress.entry], egress.entry) }
+      ActionButton { text: "Allowlist only"; enabled: egress.canEdit && egress.policy.mode === "open"; onClicked: root.request("net-block", egress.box) }
+      ActionButton { text: "Clear rules and reopen"; enabled: egress.canEdit && (egress.policy.mode === "blocked" || egress.policy.rules.length > 0); onClicked: root.request("net-open", egress.box) }
+    }
+  }
+
+  component NetworksCard: Column {
+    id: networks
+    readonly property var result: root.details.networks
+    readonly property bool busy: !!root.pending.networks
+    property string joining: ""
+    spacing: Style.space(6)
+    Row {
+      spacing: Style.space(6)
+      PlainText { text: "Private networks" }
+      ActionButton { text: "Refresh"; enabled: !networks.busy; onClicked: root.loadDetail("networks", "") }
+    }
+    DetailMessage { result: networks.result }
+    PlainText {
+      visible: !!networks.result && networks.result.ok && networks.result.data.length === 0
+      text: "No private networks yet."
+      color: root.muted
+    }
+    PlainText {
+      visible: !!networks.result && networks.result.ok
+      width: parent.width
+      text: "Forks inherit membership. Connecting to a suspended member can wake it."
+      color: root.muted
+      wrapMode: Text.Wrap
+    }
+    NamedAction {
+      visible: !!networks.result && networks.result.ok
+      width: parent.width
+      placeholder: "Network name"
+      buttonText: "Create network"
+      verb: "net-create"
+      target: "networks"
+    }
+    Repeater {
+      model: networks.result && networks.result.ok ? networks.result.data : []
+      delegate: Column {
+        id: network
+        required property var modelData
+        width: networks.width
+        spacing: Style.space(4)
+        PlainText { width: parent.width; text: network.modelData.name + "  ·  " + network.modelData.cidr; font.bold: true }
+        Repeater {
+          model: network.modelData.members
+          delegate: Column {
+            id: member
+            required property var modelData
+            width: network.width
+            PlainText { width: parent.width; text: root.boxLabel(member.modelData.box) + "  ·  " + member.modelData.ip }
+            PlainText { width: parent.width; text: member.modelData.host; color: root.muted }
+            ActionButton {
+              text: "Remove member"
+              enabled: !networks.busy
+              onClicked: root.request("net-leave", network.modelData.name, [network.modelData.name, member.modelData.box], root.boxLabel(member.modelData.box))
+            }
+          }
+        }
+        Row {
+          spacing: Style.space(6)
+          ActionButton {
+            text: "Add a box"
+            enabled: !networks.busy
+            active: networks.joining === network.modelData.name
+            onClicked: networks.joining = active ? "" : network.modelData.name
+          }
+          ActionButton {
+            text: "Delete network"
+            enabled: !networks.busy
+            onClicked: root.request("net-delete", network.modelData.name, [network.modelData.name],
+              network.modelData.members.map(function(m) { return root.boxLabel(m.box) }).join(", "))
+          }
+        }
+        Flow {
+          visible: networks.joining === network.modelData.name
+          width: parent.width
+          spacing: Style.space(5)
+          Repeater {
+            model: root.boxes.filter(function(b) {
+              for (var i = 0; i < network.modelData.members.length; ++i)
+                if (network.modelData.members[i].box === b.name) return false
+              return true
+            })
+            delegate: ActionButton {
+              required property var modelData
+              text: root.boxLabel(modelData.name)
+              enabled: !networks.busy
+              onClicked: {
+                networks.joining = ""
+                root.runAction("net-join", [network.modelData.name, modelData.name], "networks")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  component SecretsCard: Column {
+    id: secrets
+    readonly property var result: root.details.secrets
+    readonly property bool busy: !!root.pending.secrets
+    property bool editing: false
+    property bool replacing: false
+    property bool advanced: false
+    property string secretName: ""
+    property string host: ""
+    property string header: "Authorization"
+    property string format: "Bearer {}"
+    property bool allBoxes: false
+    property bool intercept: false
+    property var selected: []
+    readonly property var missingBoxes: selected.filter(function(name) {
+      return !root.boxes.some(function(box) { return box.name === name })
+    })
+    readonly property bool nameExists: !!result && !!result.ok && result.data.some(function(item) {
+      return item.name === secrets.secretName
+    })
+    spacing: Style.space(6)
+    function edit(item) {
+      secretName = item ? item.name : ""
+      host = item && item.hosts.length === 1 ? item.hosts[0] : ""
+      allBoxes = !!(item && item.all)
+      selected = item ? item.boxes.slice() : []
+      header = "Authorization"
+      format = "Bearer {}"
+      intercept = false
+      replacing = !!item
+      advanced = replacing
+      editing = true
+    }
+    Row {
+      spacing: Style.space(6)
+      PlainText { text: "Managed secrets" }
+      ActionButton { text: "Refresh"; enabled: !secrets.busy; onClicked: root.loadDetail("secrets", "") }
+      ActionButton { text: "Add secret"; enabled: !!secrets.result && secrets.result.ok && !secrets.busy; onClicked: secrets.edit(null) }
+    }
+    DetailMessage { result: secrets.result }
+    PlainText {
+      visible: !!secrets.result && secrets.result.ok && secrets.result.data.length === 0
+      text: "No managed secrets yet."
+      color: root.muted
+    }
+    Repeater {
+      model: secrets.result && secrets.result.ok ? secrets.result.data : []
+      delegate: Column {
+        id: savedSecret
+        required property var modelData
+        width: secrets.width
+        spacing: Style.space(4)
+        PlainText { width: parent.width; text: savedSecret.modelData.name; font.bold: true }
+        PlainText {
+          width: parent.width
+          text: savedSecret.modelData.hosts.join(", ") + "  ·  "
+            + (savedSecret.modelData.all ? "All boxes" : savedSecret.modelData.boxes.map(function(b) { return root.boxLabel(b) }).join(", "))
+          wrapMode: Text.Wrap
+          color: root.muted
+        }
+        Row {
+          spacing: Style.space(6)
+          ActionButton { text: "Replace value or scope"; enabled: !secrets.busy; onClicked: secrets.edit(savedSecret.modelData) }
+          ActionButton { text: "Remove"; enabled: !secrets.busy; onClicked: root.request("secret-rm", savedSecret.modelData.name) }
+        }
+      }
+    }
+    Column {
+      visible: secrets.editing && !!secrets.result && secrets.result.ok
+      width: parent.width
+      spacing: Style.space(5)
+      PlainText {
+        width: parent.width
+        text: secrets.replacing
+          ? "Review the header, format, and interception choice before replacing this secret. Orble lists only its name, host, and scope."
+          : "Choose a destination and scope, then enter the value in Orble’s terminal prompt."
+        color: root.muted
+        wrapMode: Text.Wrap
+      }
+      KeyField {
+        width: parent.width
+        enabled: !secrets.replacing
+        placeholderText: "SECRET_NAME"
+        allowed: /[A-Z0-9_]/
+        text: secrets.secretName
+        onEdited: function(v) { secrets.secretName = v }
+      }
+      KeyField {
+        width: parent.width
+        maximumLength: 253
+        allowed: /[A-Za-z0-9.-]/
+        placeholderText: "Destination host (api.example.com)"
+        text: secrets.host
+        onEdited: function(v) { secrets.host = v }
+      }
+      Flow {
+        width: parent.width
+        spacing: Style.space(5)
+        ActionButton { text: "All boxes"; active: secrets.allBoxes; onClicked: secrets.allBoxes = !secrets.allBoxes }
+        Repeater {
+          model: secrets.allBoxes ? [] : root.boxes
+          delegate: ActionButton {
+            required property var modelData
+            text: root.boxLabel(modelData.name)
+            active: secrets.selected.indexOf(modelData.name) >= 0
+            onClicked: secrets.selected = Model.toggled(secrets.selected, modelData.name)
+          }
+        }
+      }
+      PlainText {
+        visible: !secrets.replacing && secrets.nameExists
+        text: "This name already exists. Choose Replace on its row."
+        color: root.urgent
+        width: parent.width
+        wrapMode: Text.Wrap
+      }
+      Repeater {
+        model: secrets.allBoxes ? [] : secrets.missingBoxes
+        delegate: ActionButton {
+          required property string modelData
+          text: "Remove unavailable box " + modelData
+          onClicked: secrets.selected = Model.toggled(secrets.selected, modelData)
+        }
+      }
+      ActionButton { text: "HTTP header and interception"; active: secrets.advanced; onClicked: secrets.advanced = !secrets.advanced }
+      KeyField {
+        visible: secrets.advanced
+        width: parent.width
+        placeholderText: "HTTP header"
+        text: secrets.header
+        onEdited: function(v) { secrets.header = v }
+      }
+      KeyField {
+        visible: secrets.advanced
+        width: parent.width
+        maximumLength: 100
+        allowed: /[ -~]/
+        placeholderText: "Header format (Bearer {})"
+        text: secrets.format
+        onEdited: function(v) { secrets.format = v }
+      }
+      ActionButton { visible: secrets.advanced; text: "HTTPS interception"; active: secrets.intercept; onClicked: secrets.intercept = !secrets.intercept }
+      Row {
+        spacing: Style.space(6)
+        ActionButton { text: "Cancel"; onClicked: secrets.editing = false }
+        ActionButton {
+          text: "Enter value in terminal"
+          enabled: !secrets.busy && /^[A-Z_][A-Z0-9_]*$/.test(secrets.secretName)
+            && /^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9]+$/.test(secrets.host)
+            && /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(secrets.header)
+            && secrets.format.split("{}").length === 2
+            && (secrets.replacing || !secrets.nameExists)
+            && (secrets.allBoxes || (secrets.selected.length > 0 && !secrets.missingBoxes.length))
+          onClicked: root.submitSecret(secrets.secretName, secrets.host, secrets.header, secrets.format,
+            secrets.allBoxes, secrets.intercept, secrets.selected, secrets.replacing)
+        }
+      }
+    }
+  }
+
 
   component CreditCard: Column {
     id: cc
@@ -1086,6 +1614,8 @@ Panel {
     id: brow
     required property var modelData
     readonly property var b: modelData
+    readonly property bool renameOpen: root.renameBox === brow.b.name
+    readonly property bool egressOpen: root.egressBox === brow.b.name
     readonly property bool isOpen: root.expandedBox === b.name
     readonly property string busyVerb: root.pending[b.name] || ""
     readonly property bool isBusy: busyVerb !== "" || Model.stateTone(b) === "busy"
@@ -1135,7 +1665,7 @@ Panel {
 
           PlainText {
             width: parent.width
-            text: brow.b.name
+            text: root.boxLabel(brow.b.name)
                   + (root.isAwake(brow.b.name) ? "  " + Model.icons.coffee : "")
                   + (root.exitOn && root.exitBoxes.indexOf(brow.b.name) >= 0 ? "  " + Model.icons.earth : "")
             font.bold: true
@@ -1257,6 +1787,37 @@ Panel {
           onClicked: root.request("rm", brow.b.name)
         }
       }
+
+      Flow {
+        width: parent.innerWidth
+        spacing: Style.space(6)
+        enabled: !brow.isBusy
+        ActionButton { visible: root.modernCli; text: "Rename"; active: brow.renameOpen; onClicked: root.renameBox = brow.renameOpen ? "" : brow.b.name }
+        Repeater {
+          model: !root.modernCli ? [] : brow.b.size === "s" ? ["m", "l"] : brow.b.size === "m" ? ["l"] : []
+          delegate: ActionButton {
+            required property string modelData
+            text: "Resize to " + modelData.toUpperCase()
+            onClicked: root.request("resize", brow.b.name, [brow.b.name, modelData], modelData)
+          }
+        }
+        ActionButton {
+          text: "Egress rules"
+          active: brow.egressOpen
+          onClicked: root.toggleEgress(brow.b.name)
+        }
+      }
+      NamedAction {
+        visible: brow.renameOpen
+        width: parent.innerWidth
+        placeholder: "New box name"
+        verb: "rename"
+        target: brow.b.name
+        prefix: [brow.b.name]
+        storageKey: "rename:" + brow.b.name
+        onSubmitted: root.renameBox = ""
+      }
+      EgressCard { visible: brow.egressOpen; width: parent.innerWidth; box: brow.b.name }
 
       // Save a snapshot: optional name, then Save.
       Row {
@@ -1406,7 +1967,7 @@ Panel {
 
     PanelActionButton {
       id: pcopy
-      anchors.right: poff.left
+      anchors.right: pprivate.visible ? pprivate.left : poff.left
       anchors.rightMargin: Style.space(2)
       anchors.verticalCenter: parent.verticalCenter
       iconText: Model.icons.copy
@@ -1416,6 +1977,18 @@ Panel {
       onClicked: root.copyText(prow.p.url)
     }
 
+    PanelActionButton {
+      id: pprivate
+      visible: root.modernCli && prow.p.access === "public"
+      anchors.right: poff.left
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: Model.icons.lock
+      tooltipText: "Make this shared port private"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: !prow.busyVerb
+      onClicked: root.runAction("port-private", [prow.box, String(prow.p.port)], "port:" + prow.box + ":" + prow.p.port)
+    }
     PanelActionButton {
       id: poff
       anchors.right: parent.right
@@ -1435,6 +2008,7 @@ Panel {
     id: srow
     required property var modelData
     readonly property var sn: modelData
+    readonly property bool renameOpen: root.renameSnapshot === srow.sn.name
     readonly property string busyVerb: root.pending["snap:" + sn.name] || ""
     readonly property bool sizesOpen: root.fromSnap === sn.name
     width: column.width
@@ -1465,13 +2039,13 @@ Panel {
 
         PlainText {
           width: parent.width
-          text: srow.sn.name
+          text: srow.sn.alias || srow.sn.name
           font.pixelSize: Style.font.bodySmall
           font.bold: true
         }
         PlainText {
           width: parent.width
-          text: srow.busyVerb ? Model.progressText[srow.busyVerb] + "…" : Model.snapshotLine(srow.sn)
+          text: srow.busyVerb ? Model.progressText[srow.busyVerb] + "…" : (srow.sn.gallery ? "Gallery · " : "") + Model.snapshotLine(srow.sn)
           color: root.muted
           font.pixelSize: Style.font.caption
         }
@@ -1479,7 +2053,7 @@ Panel {
 
       PanelActionButton {
         id: snew
-        anchors.right: srm.left
+        anchors.right: srename.visible ? srename.left : srm.visible ? srm.left : parent.right
         anchors.rightMargin: Style.space(2)
         anchors.verticalCenter: parent.verticalCenter
         iconText: Model.icons.plus
@@ -1496,7 +2070,20 @@ Panel {
       }
 
       PanelActionButton {
+        id: srename
+        visible: root.modernCli && !srow.sn.gallery
+        anchors.right: srm.left
+        anchors.verticalCenter: parent.verticalCenter
+        iconText: "✎"
+        tooltipText: "Rename snapshot"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !srow.busyVerb
+        onClicked: root.renameSnapshot = srow.renameOpen ? "" : srow.sn.name
+      }
+      PanelActionButton {
         id: srm
+        visible: !srow.sn.gallery
         anchors.right: parent.right
         anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
@@ -1510,6 +2097,16 @@ Panel {
       }
     }
 
+    NamedAction {
+      visible: srow.renameOpen && !srow.sn.gallery
+      width: parent.width
+      placeholder: "New snapshot name"
+      verb: "snapshot-rename"
+      target: "snap:" + srow.sn.name
+      prefix: [srow.sn.name]
+      storageKey: "snapshot-rename:" + srow.sn.name
+      onSubmitted: root.renameSnapshot = ""
+    }
     Row {
       visible: srow.sizesOpen && srow.busyVerb === ""
       leftPadding: Style.space(24)

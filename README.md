@@ -1,6 +1,6 @@
 # Orble Helper
 
-An [Omarchy](https://omarchy.org/) bar plugin for [Orble](https://orble.tech), sandboxes for AI agents. It puts your boxes, snapshots, credit, SSH keys and the exit node in a panel on the bar, covering every command on the [CLI docs](https://orble.tech/docs?tab=cli): new boxes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node with its LAN and fallback options, SSH keys, top-ups, sign-in and CLI updates.
+An [Omarchy](https://omarchy.org/) bar plugin for [Orble](https://orble.tech), sandboxes for AI agents. It puts your boxes, snapshots, credit, SSH keys and the exit node in a panel on the bar, using the official [CLI](https://orble.tech/docs?tab=cli): new boxes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node with its LAN and fallback options, SSH keys, top-ups, sign-in and CLI updates. With Orble Pro, it also manages outbound rules, private box networks and secret assignments.
 
 It is a front end to the official `orble` CLI and uses the CLI's own sign-in. The plugin stores no token or password.
 
@@ -14,7 +14,7 @@ It is a front end to the official `orble` CLI and uses the CLI's own sign-in. Th
 
 **Credit.** Your credit, account and box hostname pattern (`<box>.<account>.orble.tech`). **Add credit** offers $10, $25, $50 or $100; after you confirm, `orble topup <amount>` runs in a terminal, where you finish paying the way the CLI asks. The plugin never pays anything itself.
 
-**New box (+).** Pick a size (S 2 vCPU / 4 GiB, M 4/8, L 8/16; $0.015, $0.03 or $0.06 an hour while running, nothing while suspended), then **Create S/M/L box**: runs `orble new -s <size>`. To wake an existing box, use ▶ on its row. The notification names the box and how fast it started. With no credit, the panel refuses rather than letting `orble new` prompt for a top-up in the background.
+**New box (+).** Pick a size (S 2 vCPU / 4 GiB, M 4/8, L 8/16; $0.015, $0.03 or $0.06 an hour while running, nothing while suspended), optionally type a name, then **Create S/M/L box**: runs `orble new -s <size>`. To wake an existing box, use ▶ on its row. The notification names the box and how fast it started. With no credit, the panel refuses rather than letting `orble new` prompt for a top-up in the background.
 
 **Boxes.** Every box shows its state, size and spend, with two buttons:
 
@@ -32,19 +32,29 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 | Desktop | `orble vnc <box>`: the desktop in your browser, started if needed | No |
 | VNC viewer | `orble desktop <box>` in a terminal (shown only when `xtigervncviewer` or `remmina` is installed) | No |
 | Desktop off | `orble desktop <box> --off` (shown while the desktop runs) | No |
+| Rename | Set a display name while keeping the generated box identity for SSH and actions. | No |
+| Resize | Restart the box at a larger size. Files stay and running programs stop. | Yes |
 | Fork | `orble fork <box> -n 1` (a new box carrying on from this one, running programs included; forks are listed indented under their box) | Yes |
 | Snapshot | `orble snapshot <box> [name]`: type an optional name, then **Save** (storage only, $0.05 per GiB-month) | No |
 | Delete | `orble rm <box> -y` | Yes |
 
-**Ports.** An expanded box also lists its shared ports (`orble port <box>`), each at its own HTTPS address, with buttons to open it, copy the address, or stop sharing (`orble port <box> <port> --off`). Type a port and choose **Share** (`orble port <box> <port>`: only your signed-in Orble account can open it) or **Public** (`--public`: anyone with the address, asks first; Orble allows it only on accounts that have added credit). Ports load when you expand a box, since the CLI lists them one box at a time.
+**Ports.** An expanded box also lists its shared ports (`orble port <box>`), each at its own HTTPS address, with buttons to open it, copy the address, make a public port private again, or stop sharing (`orble port <box> <port> --off`). Type a port and choose **Share** (`orble port <box> <port>`: only your signed-in Orble account can open it) or **Public** (`--public`: anyone with the address, asks first; Orble allows it only on accounts that have added credit). Ports load when you expand a box, since the CLI lists them one box at a time.
 
-**Snapshots.** A list of your snapshots, always shown under the boxes (`orble snapshots --json`): name, the box it was saved from, its size, disk and age. **+** offers the sizes a box made from it can have and runs `orble new --from <snapshot> -s <size>`. At the snapshot's own size the new box has its files and running programs; larger, its files only (the tooltip says which). The trash button deletes it (`orble snapshot rm <snapshot> -y`, asks first). Like `new`, making a box from a snapshot is refused at zero credit. The section is hidden with a CLI from before snapshots; **Update CLI** fixes that.
+**Snapshots.** A list of your snapshots, always shown under the boxes (`orble snapshots --json`): name, the box it was saved from, its size, disk and age. **+** offers the sizes a box made from it can have and runs `orble new --from <snapshot> -s <size>`. At the snapshot's own size the new box has its files and running programs; larger, its files only (the tooltip says which). Gallery snapshots can be used to create boxes. Rename and delete are available for your own snapshots. The trash button deletes a snapshot (`orble snapshot rm <snapshot> -y`, asks first). Like `new`, making a box from a snapshot is refused at zero credit. The section is hidden with a CLI from before snapshots; **Update CLI** fixes that.
+
+**Egress rules (Pro).** Open a box and choose **Egress rules**. Add or remove allow and deny rules for domains, wildcard domains, IPv4 addresses, or CIDRs. **Allowlist only** blocks everything else. **Clear rules and reopen** removes the policy. Rules carry over to forks and snapshots. Orble does not combine an exit node with egress rules.
+
+**Private networks (Pro).** Open **Private networks** to see each network, its members, and their internal hostnames and addresses. Create a network and pick boxes to join. Remove members or delete a network after reviewing who will be disconnected. Forks inherit membership and connecting to a suspended member can wake it.
+
+**Managed secrets (Pro).** Open **Secrets** to see names, destination hosts, and assigned boxes. Pick one or more boxes per secret or explicitly choose **All boxes**. Orble's own terminal prompt reads the value with echo disabled. Use **Replace value or scope** to submit a new value with the complete desired scope, then reopen the panel or choose **Refresh**. Verify the HTTP header and format when replacing a secret with custom settings. HTTPS interception is optional and installs the account CA in affected boxes. The panel only receives metadata.
 
 **Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** holds one idle `orble ssh <box> -- sleep infinity` session open per box, reconnecting if it drops (connecting also resumes a suspended box), and shows a coffee cup next to the box. It works only while this machine is on and the shell runs; suspending the box from the panel turns it off. For a box that should stay up while your laptop sleeps, pin it in the Orble dashboard; the CLI has no pin command yet.
 
 **Exit node.** Sends boxes' traffic through this machine, from its IP, while it runs (`orble exit-node`). Pick boxes (none picked means the ones switched on in the Orble dashboard), and optionally **LAN** (`--lan`: boxes reach your LAN, VPN or tailnet) and **Fallback** (`--fallback`: boxes use Orble's network while this machine is offline). **Stop** sends Ctrl-C (SIGINT) so the CLI puts the boxes back on Orble's network. The exit node runs as long as the shell does; restarting the shell or logging out stops it.
 
 **SSH keys.** The keys on your account, each removable (`orble keys rm <fingerprint>`, asks first), and the `.pub` files in `~/.ssh` that aren't on the account yet, each with **+** to add it (`orble keys add <file>`).
+
+Build a snapshot from a Dockerfile with `orble snapshot build` in a terminal, where you can select the build context and see progress.
 
 **Footer.** When the list was refreshed, **Update CLI** (`orble update`) and **Dashboard**.
 
@@ -53,7 +63,7 @@ Every background action sends a notification when it finishes, saying whether it
 ## Requirements
 
 - Omarchy with the Quickshell-based shell.
-- The [`orble` CLI](https://orble.tech/docs), signed in (`orble account`).
+- The [`orble` CLI](https://orble.tech/docs), signed in (`orble account`). The new management controls were verified with `bc07c8bf`. Use **Update CLI** to enable them on an older CLI.
 - `python3`, `ssh-keygen`, `wl-copy` and `xdg-open`, which Omarchy ships. Optional: `tigervnc` or `remmina` for the VNC viewer button.
 
 ## Install
@@ -113,12 +123,12 @@ Panel.qml ──argv──▶ bin/orble-panel ──argv──▶ orble CLI ─�
 
 ### Security and privacy
 
-- **No secrets.** Signed out, every `orble` command starts a browser sign-in, so the background poll must not run one. The helper checks only *whether* `~/.config/orble/config.json` has a token, never reading it out, and reports "Not signed in" without calling the CLI. If the CLI starts a sign-in anyway (an expired token), the call is ended at once.
+- **No secret values in the plugin.** Signed out, every `orble` command starts a browser sign-in, so the background poll must not run one. The helper checks only *whether* `~/.config/orble/config.json` has a token, never reading it out, and reports "Not signed in" without calling the CLI. If the CLI starts a sign-in anyway (an expired token), the call is ended at once.
 - **No shell strings, strict input.** Every process gets a fixed argument list. Box and snapshot names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`, ports 1 to 65535, fingerprints `SHA256:` plus 43 base64 characters, key files must be `.pub` files directly in `~/.ssh` (links resolved), and top-ups whole dollars from 10 to 500. Nothing can become a flag (the CLI itself would happily try to delete a box named `--help`).
 - **No prompts in the background.** The CLI gets empty stdin, `rm` and `snapshot rm` always get `-y` (without it, `snapshot rm` reads the empty stdin as no, keeps the snapshot and still exits 0), `keys add` always gets a file, and `new`, `new --from` and `fork` are refused at zero credit.
 - **Asks first:** deleting a box or snapshot, forking, key removal, public ports and top-ups. Top-ups only ever run in a visible terminal.
 - **Plain text only**, for names and CLI output.
-- **Network use:** only what the `orble` CLI does: 4 requests every 2 minutes in the background (plus one for the expanded box's ports when the panel opens), every 10 s while the panel is open, plus the actions you click. No cache or state files.
+- **Network use:** only what the `orble` CLI does. The core refresh makes 4 account requests every 2 minutes in the background (plus one for the expanded box's ports when the panel opens), every 10 s while the panel is open, plus the actions you click. Network, secret and egress lists load on demand. The CLI help check is local. No cache or state files.
 
 ## Troubleshooting
 

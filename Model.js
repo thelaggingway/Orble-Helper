@@ -234,6 +234,21 @@ var topupOptions = [
 ]
 
 function confirmText(verb, target, extra) {
+  if (verb === "resize") {
+    var size = sizeOption(extra)
+    return "Resize " + target + " to " + extra.toUpperCase() + "? The box restarts and running programs stop. Files stay. "
+      + (size ? "The new size costs $" + size.hourUSD + "/h while running." : "")
+  }
+  if (verb === "net-block") return "Use allowlist-only egress for " + target + "? Connections outside the allowlist will stop."
+  if (verb === "net-open") return "Clear every egress rule for " + target + " and reopen internet access?"
+  if (verb === "net-allow") return "Allow " + extra + " for " + target + "?"
+  if (verb === "net-deny") return "Deny " + extra + " for " + target + "? This may interrupt connections."
+  if (verb === "net-rm") return "Remove the " + extra + " rule for " + target + "?"
+  if (verb === "net-delete") return "Delete network " + target + "?" + (extra ? " This disconnects " + extra + "." : "")
+  if (verb === "net-leave") return "Remove " + extra + " from " + target + "?"
+  if (verb === "secret-rm") return "Remove " + target + " from the Orble account?"
+  if (verb === "secret-set") return "Open the Orble prompt for " + target + "?" + extra
+
   switch (verb) {
   case "rm": return "Delete box " + target + "? Its disk and everything on it are gone for good."
   case "keys-rm": return "Remove SSH key " + target + " from your Orble account? New boxes won't accept it."
@@ -300,5 +315,6 @@ var progressText = {
   "suspend": "Suspending", "resume": "Resuming", "rm": "Deleting", "vnc": "Opening desktop",
   "desktop-off": "Turning desktop off", "new": "Creating", "keys-add": "Adding", "keys-rm": "Removing",
   "update": "Updating", "fork": "Forking", "snapshot": "Saving snapshot", "snapshot-rm": "Deleting",
-  "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing"
+  "new-named": "Creating", "resize": "Resizing", "rename": "Renaming", "snapshot-rename": "Renaming",
+  "port-private": "Making private", "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing"
 }

@@ -49,7 +49,7 @@ case "$*" in
   fork\ *) echo "✓ rku7-f1 ready in 0.40s"; echo "✓ rku7-f2 ready in 0.42s" ;;
   update) echo "✓ Orble is up to date 515f19f2" ;;
   snapshots\ --json) [[ -n ${FAKE_OLD_CLI:-} ]] && { echo "Orble · Sandboxes for AI agents"; exit 0; }
-    printf '%s' '[{"name":"plugin-test","box":"nvbg","state":"ready","vcpus":4,"mem_mib":8192,"disk_bytes":409100288,"created_at":"2026-11-16T17:24:45Z"},
+    printf '%s' '[{"name":"plugin-test","alias":"renamed-snapshot","box":"nvbg","state":"ready","vcpus":4,"mem_mib":8192,"disk_bytes":409100288,"created_at":"2026-11-16T17:24:45Z"},
       {"name":"-y","box":"nvbg","state":"ready"},
       {"name":"big","box":"$(id)","state":"Saving!","vcpus":8,"mem_mib":16384,"disk_bytes":2500000000}]' ;;
   snapshot\ nvbg*) echo "✓ saved nvbg as plugin-test m 4c/8g, 409 MB, in 1.13s"; echo "  orble new --from plugin-test" ;;
@@ -61,6 +61,13 @@ case "$*" in
   port\ nvbg\ 8081\ --public) echo "orble: public ports are for accounts that have added credit: https://orble.tech/dashboard" >&2; exit 1 ;;
   port\ nvbg\ *\ --off) echo "✓ nvbg:${3} unshared" ;;
   port\ nvbg\ *) echo "✓ nvbg:${3} signin"; echo "  https://${3}-yj3vcxk7lezdtgpc.orble.dev" ;;
+  net\ rku7) printf 'blocked\nallow  example.com\ndeny   192.0.2.1\n' ;;
+  net\ ls)
+    if [[ ${FAKE_DETAILS:-} == old ]]; then echo 'Orble · Sandboxes for AI agents' >&2; exit 2; fi
+    if [[ ${FAKE_DETAILS:-} == free ]]; then echo 'orble: box networks require Pro' >&2; exit 1; fi
+    if [[ ${FAKE_DETAILS:-} == malformed ]]; then echo 'unknown output'; exit 0; fi
+    printf 'my-net  10.240.0.0/24\n  10.240.0.2       rku7.my-net.internal\n' ;;
+  secret\ ls) printf 'EXAMPLE_KEY  example.com  rku7,base1\n' ;;
   rm\ broken*) echo "orble: no such box" >&2; exit 1 ;;
   ssh\ *--\ sleep\ infinity) [[ -n ${FAKE_SSH_DROP:-} ]] && { echo "Connection closed by remote host" >&2; exit 255; }
     echo $$ >> "$FAKE_PIDS"; exec sleep 30 ;;
@@ -128,7 +135,7 @@ d = json.loads(sys.argv[1])
 assert d["snapshotsSupported"] is True
 sn = d["snapshots"]
 assert [x["name"] for x in sn] == ["plugin-test", "big"], sn
-assert sn[0] == {"name": "plugin-test", "box": "nvbg", "state": "ready", "size": "m", "vcpus": 4, "memGiB": 8,
+assert sn[0] == {"name": "plugin-test", "alias": "renamed-snapshot", "gallery": False, "box": "nvbg", "state": "ready", "size": "m", "vcpus": 4, "memGiB": 8,
                  "disk": "409 MB", "created": sn[0]["created"]} and sn[0]["created"].endswith("ago"), sn[0]
 assert sn[1]["box"] == "" and sn[1]["state"] == "unknown" and sn[1]["size"] == "l" and sn[1]["disk"] == "2.5 GB", sn[1]
 EOF
@@ -379,6 +386,31 @@ grep -q "connected" "$T/exit.out" && grep -q "off" "$T/exit.out" || fail "demo e
 sleep 0.5; kill -TERM $pid; wait $pid
 grep -q "Keeping k7f2 awake" "$T/awake.out" && grep -q "Stopped" "$T/awake.out" || fail "demo keep awake"
 [[ ! -s $LOG ]] || fail "demo mode called the CLI: $(cat "$LOG")"
+ok
+
+# --- On-demand Pro data and fixed arguments ---
+"$HELPER" detail egress rku7 | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["data"]["mode"]=="blocked" and len(d["data"]["rules"])==2'
+"$HELPER" detail networks | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"][0]["members"][0]["box"]=="rku7"'
+"$HELPER" detail secrets | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"][0]["boxes"]==["rku7","base1"]'
+"$HELPER" action net-allow rku7 '*.example.com'
+"$HELPER" action net-join my-net rku7
+"$HELPER" action secret-rm EXAMPLE_KEY
+"$HELPER" action new-named s my-box
+"$HELPER" action resize rku7 m
+"$HELPER" action port-private nvbg 3000
+for call in 'net allow rku7 *.example.com' 'net join my-net rku7' 'secret rm EXAMPLE_KEY' 'new -s s --name my-box' 'resize rku7 m' 'port nvbg 3000 --private'; do
+  grep -Fxq "$call" "$LOG" || fail "$call missing"
+done
+for kind in old free malformed; do
+  FAKE_DETAILS="$kind" "$HELPER" detail networks |
+    python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d["ok"] and sys.argv[1] in d["error"],d'       "$(case $kind in old) echo 'Update CLI';; free) echo 'Orble Pro';; malformed) echo 'unrecognized';; esac)"
+done
+before=$(wc -l < "$LOG")
+"$HELPER" detail secrets --demo | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
+if "$HELPER" action net-allow rku7 --help; then fail "invalid egress entry"; fi
+if "$HELPER" action net-allow rku7 999.999.999.999; then fail "invalid IPv4 entry"; fi
+if "$HELPER" action secret-set EXAMPLE_KEY example.com; then fail "secret set must use terminal path"; fi
+[[ $(wc -l < "$LOG") == "$before" ]] || fail "invalid action reached CLI"
 ok
 
 echo "helper-test: $pass groups passed"

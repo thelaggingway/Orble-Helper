@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "thelaggingway.orble-helper",
   "name": "Orble Helper",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "author": "thelaggingway",
   "license": "MIT",
-  "description": "Orble sandboxes in the Omarchy bar: new boxes in three sizes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node, SSH keys, credit and top-ups, through the signed-in orble CLI.",
+  "description": "Orble sandboxes in the Omarchy bar: new boxes in three sizes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node, private networks, egress rules, secrets, SSH keys and credit, through the signed-in orble CLI.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Orble Helper",
-    "description": "Your Orble boxes and snapshots with one-click SSH, suspend and resume, shared ports, desktops, the exit node, SSH keys and credit.",
+    "description": "Your Orble boxes and snapshots with one-click SSH, suspend and resume, shared ports, desktops, the exit node, networks, secrets, SSH keys and credit.",
     "category": "Development",
     "aliases": [
       "orble",
