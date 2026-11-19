@@ -316,5 +316,6 @@ var progressText = {
   "desktop-off": "Turning desktop off", "new": "Creating", "keys-add": "Adding", "keys-rm": "Removing",
   "update": "Updating", "fork": "Forking", "snapshot": "Saving snapshot", "snapshot-rm": "Deleting",
   "new-named": "Creating", "resize": "Resizing", "rename": "Renaming", "snapshot-rename": "Renaming",
-  "port-private": "Making private", "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing"
+  "port-private": "Making private", "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing",
+  "keep-awake": "Pinning awake", "keep-awake-off": "Unpinning"
 }

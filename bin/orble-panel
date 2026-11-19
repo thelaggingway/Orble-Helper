@@ -13,16 +13,14 @@ sign-in is used and the plugin stores no token anywhere.
   orble-panel action <verb> ...          run one action and send a desktop notification
   orble-panel exit-node [--lan] [--fallback] [box...]
                                          become `orble exit-node` (the panel stops it with SIGINT)
-  orble-panel keep-awake <box>...        hold an idle `orble ssh` per box so it doesn't auto-suspend
-                                         (the panel stops it with SIGTERM)
   orble-panel ssh <box>                  (in a terminal) orble ssh, resuming a suspended box
   orble-panel desktop <box>              (in a terminal) the box's desktop in a local VNC viewer
   orble-panel topup <dollars>            (in a terminal) orble topup, $10 to $500
   orble-panel login                      (in a terminal) orble login
-  status | ports | exit-node | keep-awake ... --demo          made-up data for screenshots; never calls the CLI
+  status | ports | exit-node ... --demo          made-up data for screenshots; never calls the CLI
 
 Action verbs:
-  suspend|resume|rm|vnc|desktop-off <box>
+  suspend|resume|rm|vnc|desktop-off|keep-awake|keep-awake-off <box>
   new [s|m|l]
   new-from <snapshot> [s|m|l]
   fork <box> [1-10]
@@ -44,7 +42,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -252,6 +249,7 @@ def parse_boxes_json(text):
             "active": since(b.get("last_active_at")) if b.get("last_active_at") else "",
             "flags": ["desktop"] if b.get("desktop") is True else [],
             "forkedFrom": fork_parent(b),
+            "keepAwake": b.get("keep_awake") is True,
         })
     return fork_order(boxes)
 
@@ -424,6 +422,7 @@ def status():
     out["boxes"] = boxes
     _, help_out, help_err = res["help"]
     out["modernCli"] = bool(re.search(r"^  resize ", help_out + help_err, re.M))
+    out["keepAwakeSupported"] = bool(re.search(r"^  keep-awake ", help_out + help_err, re.M))
     code, text, _ = res["snapshots"]
     snaps = parse_snapshots_json(text) if code == 0 else None
     if snaps is not None:
@@ -510,7 +509,13 @@ ONE_ARG = {
     "rm": (lambda b: ["rm", b, "-y"], 180, "{b} and its disk deleted"),
     "vnc": (lambda b: ["vnc", b], 180, "Opening the desktop of {b} in your browser"),
     "desktop-off": (lambda b: ["desktop", b, "--off"], 120, "Desktop on {b} turned off"),
+    # Server-side: the box stays up while this machine is off. A suspended box resumes.
+    "keep-awake": (lambda b: ["keep-awake", b], 180, "{b} kept awake"),
+    "keep-awake-off": (lambda b: ["keep-awake", b, "off"], 60, "{b} suspends when idle again"),
 }
+
+# A CLI without a command prints this help and exits 0.
+HELP_BANNER = "Orble · Sandboxes for AI agents"
 
 
 def credit():
@@ -750,6 +755,9 @@ def action(argv):
             sys.exit(5)
 
     code, out, err = cli(args, timeout)
+    if code == 0 and verb != "update" and HELP_BANNER in out:
+        notify(f"Orble: {verb} failed", "This Orble CLI doesn't have that command. Update it (Update CLI in the panel, or orble update).", urgent=True)
+        sys.exit(2)
     if code == 0:
         if verb in ("new", "new-named", "new-from"):
             m = re.search(r"\b([A-Za-z0-9][A-Za-z0-9._-]{0,62}) ready\b(.*)", out)
@@ -830,90 +838,13 @@ def exit_node(argv):
     os.execve(CLI, [CLI, "exit-node", *flags, *boxes], ENV)
 
 
-def keep_awake(argv):
-    """Hold one idle `orble ssh <box> -- sleep infinity` session per box, which keeps the box from
-    auto-suspending (Orble suspends a box about a minute after its last connection closes; running
-    processes alone don't count). Dropped sessions reconnect with backoff, and connecting resumes a
-    suspended box. A sign-in prompt ends everything (exit 3). SIGINT/SIGTERM end every session, exit 0."""
-    boxes = []
-    for a in argv:
-        b = check_name(a)
-        if b in boxes:
-            raise SystemExit(f"keep-awake: {b} given twice")
-        boxes.append(b)
-    if not 1 <= len(boxes) <= 20:
-        raise SystemExit("keep-awake: give 1 to 20 boxes")
-    if not signed_in():
-        print("Not signed in to Orble", flush=True)
-        sys.exit(3)
-
-    first_wait = max(1, int(os.environ.get("ORBLE_PANEL_RETRY_SEC", "5") or 5))
-    stop, auth = [], threading.Event()
-    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
-    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
-    procs, outs, started = {}, {}, {}
-    wait, due = {b: first_wait for b in boxes}, {b: 0.0 for b in boxes}
-    ssh_args = ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes",
-                "--", "sleep", "infinity"]
-
-    def watch(p, buf):
-        # Read as it arrives: a signed-out CLI waits for a browser sign-in and never exits on its own.
-        while True:
-            chunk = os.read(p.stdout.fileno(), 4096)
-            if not chunk:
-                return
-            buf.append(chunk)
-            if any(m in b"".join(buf)[-4096:] for m in AUTH_MARKERS):
-                auth.set()
-                p.kill()
-
-    def end_all():
-        for p in procs.values():
-            if p.poll() is None:
-                p.terminate()
-        deadline = time.time() + 5
-        for p in procs.values():
-            try:
-                p.wait(max(0.1, deadline - time.time()))
-            except subprocess.TimeoutExpired:
-                p.kill()
-
-    print(f"Keeping {', '.join(boxes)} awake", flush=True)
-    while not stop and not auth.is_set():
-        for b in boxes:
-            p = procs.get(b)
-            if p is not None and p.poll() is None:
-                continue
-            if p is not None:
-                procs.pop(b)
-                # A session that lasted a minute was a real one: reconnect soon. Quick failures back off.
-                wait[b] = first_wait if time.time() - started[b] > 60 else min(wait[b] * 2, 120)
-                due[b] = time.time() + wait[b]
-                text = clean(b"".join(outs.pop(b)).decode(errors="replace"))
-                why = last_lines(text) or f"exit {p.returncode}"
-                print(f"{b}: session ended ({why[:120]}); reconnecting in {wait[b]}s", flush=True)
-            if time.time() >= due[b]:
-                procs[b] = subprocess.Popen([CLI, "ssh", b, *ssh_args], stdin=subprocess.DEVNULL,
-                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=ENV)
-                outs[b] = []
-                threading.Thread(target=watch, args=(procs[b], outs[b]), daemon=True).start()
-                started[b] = time.time()
-        time.sleep(0.5)
-    end_all()
-    if auth.is_set():
-        print("Not signed in to Orble", flush=True)
-        notify("Orble: keep awake stopped", "Not signed in. Sign in, then turn it on again.", urgent=True)
-        sys.exit(3)
-    print("Stopped keeping boxes awake", flush=True)
-
-
 # ---------- demo data (the panel's "Demo data" setting; for screenshots) ----------
 
 def demo_status():
-    def box(name, state, c, g, spent, active, flags=()):
+    def box(name, state, c, g, spent, active, flags=(), awake=False):
         return {"name": name, "state": state, "host": f"{name}.quiet-otter.orble.tech",
                 "size": SIZE_CLASS.get((c, g), ""), "vcpus": c, "memGiB": g,
-                "spentUSD": spent, "active": active, "flags": list(flags)}
+                "spentUSD": spent, "active": active, "flags": list(flags), "keepAwake": awake}
 
     fp = lambda c: "SHA256:" + (c * 43)
     print(json.dumps({
@@ -921,14 +852,14 @@ def demo_status():
         "account": {"email": "you@example.com", "domain": "quiet-otter", "creditUSD": 7.42, "keys": 2},
         "boxes": [
             box("k7f2", "running", 2, 4, 0.0412, "now", ["desktop"]),
-            box("m3qa", "running", 2, 4, 0.0086, "2m ago"),
+            box("m3qa", "running", 2, 4, 0.0086, "2m ago", awake=True),
             box("x9pd", "suspended", 2, 4, 0.1931, "3d ago"),
         ],
         "snapshots": [
             {"name": "k7f2-base", "box": "k7f2", "state": "ready", "size": "s", "vcpus": 2, "memGiB": 4,
              "disk": "1.2 GB", "created": "2d ago"},
         ],
-        "snapshotsSupported": True, "modernCli": True,
+        "snapshotsSupported": True, "modernCli": True, "keepAwakeSupported": True,
         "keys": [{"name": "laptop", "fingerprint": fp("A")}, {"name": "desktop", "fingerprint": fp("B")}],
         "localKeys": [
             {"file": "id_ed25519.pub", "fingerprint": fp("A"), "comment": "you@laptop", "type": "ED25519", "added": True},
@@ -955,16 +886,6 @@ def demo_exit_node(argv):
     print("Exit node off. The boxes are back on Orble's network.", flush=True)
 
 
-def demo_keep_awake(argv):
-    stop = []
-    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
-    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
-    print(f"Keeping {', '.join(argv) or 'nothing'} awake", flush=True)
-    while not stop:
-        time.sleep(0.2)
-    print("Stopped keeping boxes awake", flush=True)
-
-
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -980,8 +901,6 @@ def main():
         demo_ports(rest[0])
     elif demo and cmd == "exit-node":
         demo_exit_node(rest[:-1])
-    elif demo and cmd == "keep-awake":
-        demo_keep_awake(rest[:-1])
     elif cmd == "status":
         status()
     elif cmd == "ports" and len(rest) == 1:
@@ -998,8 +917,6 @@ def main():
         action(rest)
     elif cmd == "exit-node":
         exit_node(rest)
-    elif cmd == "keep-awake":
-        keep_awake(rest)
     elif cmd == "ssh" and len(rest) == 1:
         b = check_name(rest[0])
         in_terminal(f"ssh {b} (a suspended box resumes)", ["ssh", b])

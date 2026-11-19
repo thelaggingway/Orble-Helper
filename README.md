@@ -27,7 +27,7 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 
 | Action | CLI | Asks first? |
 |---|---|---|
-| Keep awake / Let it sleep | holds an idle `orble ssh <box>` session open so the box doesn't auto-suspend (see below) | No |
+| Keep awake / Let it sleep | `orble keep-awake <box>` / `orble keep-awake <box> off` (see below) | No |
 | Copy SSH | copies `orble ssh <box>` (boxes are IPv6-only, so a plain `ssh <host>` fails on IPv4-only networks) | No |
 | Desktop | `orble vnc <box>`: the desktop in your browser, started if needed | No |
 | VNC viewer | `orble desktop <box>` in a terminal (shown only when `xtigervncviewer` or `remmina` is installed) | No |
@@ -48,7 +48,7 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 
 **Managed secrets (Pro).** Open **Secrets** to see names, destination hosts, and assigned boxes. Pick one or more boxes per secret or explicitly choose **All boxes**. Orble's own terminal prompt reads the value with echo disabled. Use **Replace value or scope** to submit a new value with the complete desired scope, then reopen the panel or choose **Refresh**. Verify the HTTP header and format when replacing a secret with custom settings. HTTPS interception is optional and installs the account CA in affected boxes. The panel only receives metadata.
 
-**Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** holds one idle `orble ssh <box> -- sleep infinity` session open per box, reconnecting if it drops (connecting also resumes a suspended box), and shows a coffee cup next to the box. It works only while this machine is on and the shell runs; suspending the box from the panel turns it off. For a box that should stay up while your laptop sleeps, pin it in the Orble dashboard; the CLI has no pin command yet.
+**Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** pins the box awake on Orble's side (`orble keep-awake <box>`), so it keeps running while this machine sleeps or is off, and resumes it if it was suspended. A pinned box shows a coffee cup and bills while it runs. **Let it sleep** (`orble keep-awake <box> off`) lets it suspend when idle again. Suspending a pinned box from the panel still suspends it, and the pin stays. The button needs an Orble CLI from 2026-11-19 or later; **Update CLI** gets one.
 
 **Exit node.** Sends boxes' traffic through this machine, from its IP, while it runs (`orble exit-node`). Pick boxes (none picked means the ones switched on in the Orble dashboard), and optionally **LAN** (`--lan`: boxes reach your LAN, VPN or tailnet) and **Fallback** (`--fallback`: boxes use Orble's network while this machine is offline). **Stop** sends Ctrl-C (SIGINT) so the CLI puts the boxes back on Orble's network. The exit node runs as long as the shell does; restarting the shell or logging out stops it.
 

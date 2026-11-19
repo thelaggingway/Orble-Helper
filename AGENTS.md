@@ -9,7 +9,7 @@ Guide for coding agents (and people) changing this plugin. Read [README.md](READ
 | `manifest.json` | Omarchy manifest: id `thelaggingway.orble-helper`, `bar-widget`, settings schema. |
 | `Panel.qml` | Bar icon + `KeyboardPanel`: state, polling, action dispatch, confirm dialog, terminal launches, the exit-node `Process`. Inline components: `KeyField`, `PlainText`, `StateDot`, `ActionButton`, `Chips`, `CreditCard`, `ExitNodeCard`, `BoxRow`, `PortRow`, `SnapshotRow`, `KeyRow`, `LocalKeyRow`. Text entry (snapshot name, port) is `KeyField`, which sets `editorFocus`, which blocks the `PanelKeyCatcher` while they have focus. |
 | `Model.js` | `.pragma library` pure helpers, run under Node in tests. |
-| `bin/orble-panel` | Python 3 stdlib, `python3 -I`. `status`, `ports <box>`, `action <verb>`, `exit-node`, `keep-awake`, and the terminal commands `ssh`, `desktop`, `topup`, `login`. The only code that runs `orble`. |
+| `bin/orble-panel` | Python 3 stdlib, `python3 -I`. `status`, `ports <box>`, `action <verb>`, `exit-node`, and the terminal commands `ssh`, `desktop`, `topup`, `login`. The only code that runs `orble`. |
 | `tests/` | `run.sh` → `source-test.sh` (static rules), `helper-test.sh` (fake `orble` on PATH, fake `~/.ssh` and config), `model-test.mjs`. `marketplace-scan.mjs` runs the Omarchy marketplace's security baseline (CI clones the marketplace). |
 
 ## Run, reload, test
@@ -32,18 +32,20 @@ To check the expanded box, temporarily set the `expandedBox` default in `Panel.q
 1. **Plain text only**: `PlainText`, never a bare `Text {}`.
 2. **Argv only**: arrays in QML, `subprocess` lists in Python, never `sh -c` or `shell=True`.
 3. **Validate before the CLI runs**: `NAME_RE` (same in Python and `Model.js`; snapshot names too), `check_port` 1–65535, `FP_RE`, `KEYFILE_RE` + realpath inside `~/.ssh`, `check_dollars` 10–500. The CLI doesn't validate (`orble rm --help` asks to delete a box named `--help`).
-4. **Whitelisted verbs**: `ONE_ARG` or an explicit branch in `action()` (`new [s|m|l]`, `new-from <snapshot> [s|m|l]`, `fork <box> [1-10]`, `snapshot <box> [name]`, `snapshot-rm <snapshot>`, `port|port-public|port-off <box> <port>`, `keys-*`, `update`). Unknown verbs exit before calling the CLI.
+4. **Whitelisted verbs**: `ONE_ARG` (including `keep-awake`, `keep-awake-off`) or an explicit branch in `action()` (`new [s|m|l]`, `new-from <snapshot> [s|m|l]`, `fork <box> [1-10]`, `snapshot <box> [name]`, `snapshot-rm <snapshot>`, `port|port-public|port-off <box> <port>`, `keys-*`, `update`). Unknown verbs exit before calling the CLI.
 5. **Never start a sign-in in the background.** `signed_in()` checks only that `config.json` has a `token` (never reads it out; `source-test.sh` checks the word appears once). `cli()` kills the CLI as soon as it prints a sign-in marker.
 6. **Never reach a prompt in the background.** stdin is `/dev/null`; `rm` and `snapshot rm` get `-y`; `keys add` gets a path; `new`, `new-from` and `fork` are refused when `account` shows credit ≤ 0 (the CLI would offer a top-up).
 7. **Money and exposure are visible and confirmed.** `fork` (a new billed box), `snapshot-rm`, `port-public` (open to anyone) and `topup` are in `confirmVerbs`; `topup` and runs only via `openTerminal`, never as a background action.
 8. **The exit node stops like Ctrl-C**: `exitProc.signal(2)`, with a 10 s fallback. The helper `execve`s the CLI so the signal reaches it directly.
 9. **QML list wrappers**: status arrays stored in a `property var` fail `Array.isArray`; read them by index (`flagsOf`) or with `filter`/`map`.
-10. **Keep awake** is one long-running `keep-awake <box>...` helper owned by `awakeProc`; changing the list restarts it (SIGTERM, then `onExited` starts the new list). It never loops on its own failures, stops at a sign-in prompt (exit 3), and suspending a box from the panel drops that box first, or the reconnect would resume it.
+10. **Keep awake** is Orble's server-side pin (`orble keep-awake <box> [off]`), read back from `ls --json`'s `keep_awake` as each box's `keepAwake`. There is no local process. The button shows only when `--help` lists `keep-awake` (`keepAwakeSupported`). A CLI without a command prints its help and exits 0, so `action()` treats help output as a failure.
 11. **Demo mode** guards `runAction` and `openTerminal`; the exit node runs the helper's fake `exit-node --demo`.
 12. No caches, state files or secrets.
 13. **No native text inputs** (`TextField`, `TextInput`, `TextEdit`, `TextArea`): a writable one fetches the clipboard on every clipboard change with no size limit (marketplace review on #14930). Use `KeyField`, which takes typed keys only (filtered by its `allowed` regex) and has no paste. `source-test.sh` enforces this.
 
 ## Current CLI additions
+
+Verified live on 2026-11-19 against the CLI downloaded from orble.tech/dl that day (sha256 `17db9a97811f…`). It adds `keep-awake <box> [off]`. `keep-awake <box>` prints `<name>  ● running, kept awake` and resumes a suspended box. `off` prints `<name>  ● running, suspends when idle`. Both are idempotent and exit 0. `ls --json` gives `"keep_awake": true` while pinned and `null` otherwise. An explicit `suspend` still suspends a pinned box, and the pin is kept (`state: suspended, keep_awake: true`). `keep-awake <box> bogus` prints help and exits 2, and `keep-awake --help` reads `--help` as a box name (`orble: no such box`). The previous CLI (`6c3c5f0e…`) printed its help with exit 0 for `keep-awake`. `account` now has a `plan` line (`Pro, ends …`). `snapshot build [-f Dockerfile] [name] [--start cmd]` exists in both builds. The panel leaves it to a terminal.
 
 Verified against `bc07c8bf`. `ls --json` uses `name` as the stable identity and `alias` as the display name. `snapshots --json` keeps the original `name` after renaming, adds `alias`, and marks built-in entries with `gallery: true`. A private shared port may be labeled `private` or `signin`, depending on the build.
 
@@ -65,7 +67,7 @@ Checked against the `orble` CLI of 2026-11-16 (`a456dba3`, which added `snapshot
 - `suspend|resume|vnc <box>`, `rm <box> [-y]`, `desktop <box> [--off]` (viewer: `xtigervncviewer` or `remmina`, tunnel on 127.0.0.1:5901).
 - `exit-node [--lan] [--fallback] [box...]` runs until Ctrl-C.
 - `topup [dollars]` (10–500), `login` (Google or GitHub, device code), `update`, hidden `__boxes`, `completion bash|zsh|fish`, `whoami`.
-- Auto-suspend (measured 2026-11-14): a box suspends about 1 minute after its last SSH connection closes. An open SSH session or an open desktop viewer keeps it awake; running processes do not (a tmux job froze while suspended and carried on after resume, so processes survive but nothing runs). `ls` ACTIVE is the time since the last connection started. Boxes can be pinned awake in the dashboard only; the CLI has no pin.
+- Auto-suspend (measured 2026-11-14): a box suspends about 1 minute after its last SSH connection closes. An open SSH session or an open desktop viewer keeps it awake; running processes do not (a tmux job froze while suspended and carried on after resume, so processes survive but nothing runs). `ls` ACTIVE is the time since the last connection started. Boxes can be pinned awake with `orble keep-awake <box>` (since the 2026-11-19 CLI) or in the dashboard.
 - Prices (orble.tech/pricing, 2026-11-16): S $0.015/h, M $0.03/h, L $0.06/h while running, all 64 GiB disk; suspended $0; storage $0.05/GiB-month. They live in `Model.sizeOptions`; update them if the pricing page changes.
 - Orble also runs an MCP server (`https://orble.tech/mcp`); the plugin doesn't use it.
 - Config: `$XDG_CONFIG_HOME/orble/config.json` with `api`, `token`, `domain`.

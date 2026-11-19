@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "thelaggingway.orble-helper",
   "name": "Orble Helper",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": "thelaggingway",
   "license": "MIT",
   "description": "Orble sandboxes in the Omarchy bar: new boxes in three sizes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node, private networks, egress rules, secrets, SSH keys and credit, through the signed-in orble CLI.",

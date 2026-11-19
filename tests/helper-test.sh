@@ -10,7 +10,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home/.ssh" "$T/config/orble"
 LOG="$T/calls.log"
 NOTES="$T/notes.log"
-export FAKE_PIDS="$T/ssh.pids" FAKE_LOG="$LOG" FAKE_NOTES="$NOTES" FAKE_MODE=ok HOME="$T/home" XDG_CONFIG_HOME="$T/config"
+export FAKE_LOG="$LOG" FAKE_NOTES="$NOTES" FAKE_MODE=ok HOME="$T/home" XDG_CONFIG_HOME="$T/config"
 echo '{"api":"https://orble.tech","token":"fake-token","domain":"zippy-summit"}' > "$T/config/orble/config.json"
 
 # Two local keys: one already on the account (the fake prints its fingerprint), one not.
@@ -29,8 +29,8 @@ fi
 case "$*" in
   ls\ --json) [[ -n ${FAKE_JSON:-} ]] || exit 0
     now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    printf '%s' '[{"name":"base1","hostname":"base1.zippy-summit.orble.tech","state":"running","desktop":true,"vcpus":4,"mem_mib":8192,"disk_gib":64,"spent_micros":1250000,"last_active_at":"'"$now"'"},
-      {"name":"other","hostname":"evil.example.com","state":"suspended","desktop":false,"vcpus":"x","mem_mib":4096,"spent_micros":0,"last_active_at":"2020-01-01T00:00:00Z"},
+    printf '%s' '[{"name":"base1","hostname":"base1.zippy-summit.orble.tech","state":"running","desktop":true,"vcpus":4,"mem_mib":8192,"disk_gib":64,"spent_micros":1250000,"last_active_at":"'"$now"'","keep_awake":true},
+      {"name":"other","hostname":"evil.example.com","state":"suspended","desktop":false,"keep_awake":"yes","vcpus":"x","mem_mib":4096,"spent_micros":0,"last_active_at":"2020-01-01T00:00:00Z"},
       {"name":"kid2","hostname":"kid2.zippy-summit.orble.tech","state":"running","vcpus":2,"mem_mib":4096,"forked_from":"kid1"},
       {"name":"-rf","hostname":"x.zippy-summit.orble.tech","state":"running"},
       {"name":"kid1","hostname":"kid1.zippy-summit.orble.tech","state":"Running!","vcpus":8,"mem_mib":16384,"forked_from":{"name":"base1"}}]' ;;
@@ -69,8 +69,10 @@ case "$*" in
     printf 'my-net  10.240.0.0/24\n  10.240.0.2       rku7.my-net.internal\n' ;;
   secret\ ls) printf 'EXAMPLE_KEY  example.com  rku7,base1\n' ;;
   rm\ broken*) echo "orble: no such box" >&2; exit 1 ;;
-  ssh\ *--\ sleep\ infinity) [[ -n ${FAKE_SSH_DROP:-} ]] && { echo "Connection closed by remote host" >&2; exit 255; }
-    echo $$ >> "$FAKE_PIDS"; exec sleep 30 ;;
+  --help) printf 'Orble · Sandboxes for AI agents\n\n  resize <box> <m|l>     restart a box at a larger size\n'
+    [[ -n ${FAKE_OLD_CLI:-} ]] || printf "  keep-awake <box> [off]  don't suspend when idle; off undoes it\n" ;;
+  keep-awake\ *) [[ -n ${FAKE_OLD_CLI:-} ]] && { echo "Orble · Sandboxes for AI agents"; exit 0; }
+    [[ $3 == off ]] && echo "$2  ● running, suspends when idle" || echo "$2  ● running, kept awake" ;;
   *) exit 0 ;;
 esac
 EOF
@@ -120,6 +122,8 @@ assert [x["name"] for x in b] == ["base1", "kid1", "kid2", "other"], [x["name"] 
 assert [x["depth"] for x in b] == [0, 1, 2, 0], b
 x = b[0]
 assert (x["size"], x["vcpus"], x["memGiB"], x["diskGiB"], x["spentUSD"], x["active"], x["flags"]) == ("m", 4, 8, 64, 1.25, "now", ["desktop"]), x
+assert x["keepAwake"] is True and [y["keepAwake"] for y in b[1:]] == [False, False, False], b
+assert d["keepAwakeSupported"] is True and d["modernCli"] is True, d
 assert b[1]["forkedFrom"] == "base1" and b[1]["size"] == "l" and b[1]["state"] == "unknown"
 assert b[2]["forkedFrom"] == "kid1" and b[2]["size"] == "s"
 o = b[3]
@@ -140,7 +144,7 @@ assert sn[0] == {"name": "plugin-test", "alias": "renamed-snapshot", "gallery": 
 assert sn[1]["box"] == "" and sn[1]["state"] == "unknown" and sn[1]["size"] == "l" and sn[1]["disk"] == "2.5 GB", sn[1]
 EOF
 out=$(FAKE_OLD_CLI=1 "$HELPER" status)
-python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] and d["snapshotsSupported"] is False and d["snapshots"] == []' "$out" || fail "old CLI snapshots"
+python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] and d["snapshotsSupported"] is False and d["snapshots"] == [] and d["keepAwakeSupported"] is False' "$out" || fail "old CLI snapshots"
 ok
 
 # --- ports: parsed, unsafe rows dropped ---
@@ -341,50 +345,29 @@ ok
 [[ $(cat "$LOG") == $'exit-node --lan --fallback rku7 k7f2\nexit-node' ]] || { cat "$LOG"; fail "exit-node argv"; }
 ok
 
-# --- keep-awake: one idle orble ssh per box, ended by SIGTERM ---
-refuse keep-awake
-refuse keep-awake rku7 rku7
-refuse keep-awake --help
-refuse keep-awake 'x$(id)'
-: > "$LOG"
-"$HELPER" keep-awake rku7 k7f2 > "$T/awake.out" & pid=$!
-sleep 1.5; kill -TERM $pid; wait $pid || fail "keep-awake exit code"
-want='-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o BatchMode=yes -- sleep infinity'
-[[ $(sort "$LOG") == "ssh k7f2 $want"$'\n'"ssh rku7 $want" ]] || { cat "$LOG"; fail "keep-awake argv"; }
-grep -q "Keeping rku7, k7f2 awake" "$T/awake.out" && grep -q "Stopped" "$T/awake.out" || { cat "$T/awake.out"; fail "keep-awake output"; }
-for p in $(cat "$T/ssh.pids"); do ! kill -0 "$p" 2>/dev/null || fail "keep-awake left session $p running"; done
-ok
-
-# --- keep-awake reconnects a dropped session ---
-: > "$LOG"
-FAKE_SSH_DROP=1 ORBLE_PANEL_RETRY_SEC=1 "$HELPER" keep-awake rku7 > "$T/awake.out" & pid=$!
-sleep 2.8; kill -TERM $pid; wait $pid || true
-(( $(grep -c '^ssh rku7' "$LOG") >= 2 )) || { cat "$LOG"; fail "keep-awake did not reconnect"; }
-grep -q "session ended (Connection closed by remote host)" "$T/awake.out" || { cat "$T/awake.out"; fail "keep-awake drop message"; }
-ok
-
-# --- keep-awake stops at a sign-in prompt, and never starts signed out ---
+# --- keep-awake: the server-side pin, on and off; an old CLI's help is a failure ---
+refuse action keep-awake --help
+refuse action keep-awake 'x$(id)'
+refuse action keep-awake rku7 k7f2
+refuse action keep-awake-off
 : > "$LOG"; : > "$NOTES"
-set +e; FAKE_MODE=auth timeout 10 "$HELPER" keep-awake rku7 > "$T/awake.out"; code=$?; set -e
-[[ $code == 3 ]] || fail "keep-awake at a sign-in prompt exited $code"
-grep -q "keep awake stopped" "$NOTES" || fail "keep-awake sign-in notification"
-mv "$T/config/orble/config.json" "$T/config.json"; : > "$LOG"
-set +e; "$HELPER" keep-awake rku7 > /dev/null; code=$?; set -e
-mv "$T/config.json" "$T/config/orble/config.json"
-[[ $code == 3 && ! -s $LOG ]] || fail "keep-awake signed out: exit $code, calls: $(cat "$LOG")"
+"$HELPER" action keep-awake rku7
+"$HELPER" action keep-awake-off rku7
+[[ $(cat "$LOG") == $'keep-awake rku7\nkeep-awake rku7 off' ]] || { cat "$LOG"; fail "keep-awake argv"; }
+grep -q "rku7 kept awake" "$NOTES" && grep -q "rku7 suspends when idle again" "$NOTES" || { cat "$NOTES"; fail "keep-awake notifications"; }
+: > "$NOTES"
+set +e; FAKE_OLD_CLI=1 "$HELPER" action keep-awake rku7; code=$?; set -e
+[[ $code == 2 ]] && grep -q "keep-awake failed.*Update" "$NOTES" || { cat "$NOTES"; fail "old CLI keep-awake exited $code"; }
 ok
 
 # --- demo data: valid shapes, and the CLI is never called ---
 : > "$LOG"
 out=$("$HELPER" status --demo)
-python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] and d["demo"] and len(d["boxes"])==3 and d["account"]["creditUSD"]>0 and d["localKeys"] and d["snapshots"]' "$out" || fail "demo status"
+python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] and d["demo"] and len(d["boxes"])==3 and d["account"]["creditUSD"]>0 and d["localKeys"] and d["snapshots"] and [b["keepAwake"] for b in d["boxes"]]==[False,True,False]' "$out" || fail "demo status"
 "$HELPER" ports k7f2 --demo | grep -q '"port": 3000' || fail "demo ports"
 "$HELPER" exit-node k7f2 --demo > "$T/exit.out" & pid=$!
 sleep 0.5; kill -INT $pid; wait $pid
 grep -q "connected" "$T/exit.out" && grep -q "off" "$T/exit.out" || fail "demo exit node"
-"$HELPER" keep-awake k7f2 --demo > "$T/awake.out" & pid=$!
-sleep 0.5; kill -TERM $pid; wait $pid
-grep -q "Keeping k7f2 awake" "$T/awake.out" && grep -q "Stopped" "$T/awake.out" || fail "demo keep awake"
 [[ ! -s $LOG ]] || fail "demo mode called the CLI: $(cat "$LOG")"
 ok
 
