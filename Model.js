@@ -28,13 +28,46 @@ var icons = {
   camera: glyph(0xF0100),
   share: glyph(0xF0496),
   open: glyph(0xF03CC),
-  lock: glyph(0xF033E)
+  lock: glyph(0xF033E),
+  chevronRight: glyph(0xF0142),
+  chevronDown: glyph(0xF0140)
 }
 
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
 var FP_RE = /^SHA256:[A-Za-z0-9+\/]{43}$/
 
 function validName(name) { return NAME_RE.test(String(name || "")) }
+
+// Orble projects (CLI 4af3402c): a slug from `orble project list`, and a name for `orble project create`.
+var PROJECT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
+var PROJECT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/
+function validProject(slug) { return PROJECT_RE.test(String(slug || "")) }
+function validProjectName(name) { return PROJECT_NAME_RE.test(String(name || "")) }
+
+// The project the panel acts on: the one picked, else the helper's (ORBLE_PROJECT), else the
+// account's default ("default" when listed, else the first the CLI lists).
+function activeProject(picked, status, projects) {
+  if (validProject(picked)) return picked
+  if (status && validProject(status.project)) return status.project
+  var list = projects || []
+  for (var i = 0; i < list.length; i++) if (list[i].slug === "default") return "default"
+  return list.length ? list[0].slug : ""
+}
+
+// Secret destinations: comma-separated host names, no repeats (`orble secret set --host` once per host).
+function validHosts(text) {
+  var hosts = String(text || "").split(",")
+  if (hosts.length < 1 || hosts.length > 20) return false
+  for (var i = 0; i < hosts.length; i++)
+    if (!/^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9]+$/.test(hosts[i]) || hosts.indexOf(hosts[i]) !== i) return false
+  return true
+}
+
+function projectLabel(slug, projects) {
+  var list = projects || []
+  for (var i = 0; i < list.length; i++) if (list[i].slug === slug) return list[i].name || slug
+  return slug || "Default"
+}
 function validFingerprint(fp) { return FP_RE.test(String(fp || "")) }
 
 // A port to share: whole number 1 to 65535, as text from the field.
@@ -54,6 +87,8 @@ function parseStatus(text) {
     if (!Array.isArray(d.keys)) d.keys = []
     if (!Array.isArray(d.localKeys)) d.localKeys = []
     if (!Array.isArray(d.snapshots)) d.snapshots = []
+    if (!Array.isArray(d.projects)) d.projects = []
+    if (typeof d.project !== "string") d.project = ""
     d.snapshotsSupported = d.snapshotsSupported === true
     if (typeof d.viewer !== "string") d.viewer = ""
     return d
@@ -122,6 +157,7 @@ function subline(b, verb) {
 function detailLine(b, awake) {
   var parts = []
   if (b.forkedFrom) parts.push("fork of " + b.forkedFrom)
+  if (b.fromSnapshot) parts.push("from snapshot " + b.fromSnapshot)
   if (b.diskGiB) parts.push(b.diskGiB + " GB disk")
   if (b.active) parts.push("active " + b.active)
   if (hasDesktop(b)) parts.push("desktop on")
@@ -202,6 +238,7 @@ function snapshotSize(snap) {
 
 function snapshotLine(snap) {
   var parts = []
+  if (snap.gallery) parts.push(snap.about || "Orble gallery")
   if (snap.box) parts.push("from " + snap.box)
   var sz = snapshotSize(snap)
   if (sz) parts.push(sz)
@@ -246,7 +283,8 @@ function confirmText(verb, target, extra) {
   if (verb === "net-rm") return "Remove the " + extra + " rule for " + target + "?"
   if (verb === "net-delete") return "Delete network " + target + "?" + (extra ? " This disconnects " + extra + "." : "")
   if (verb === "net-leave") return "Remove " + extra + " from " + target + "?"
-  if (verb === "secret-rm") return "Remove " + target + " from the Orble account?"
+  if (verb === "secret-rm") return "Remove " + target + " from the " + (extra || "Default") + " project? Boxes there stop getting it."
+  if (verb === "project-create") return "Create the Orble project " + target + "? The CLI has no command to delete a project."
   if (verb === "secret-set") return "Open the Orble prompt for " + target + "?" + extra
 
   switch (verb) {
@@ -267,6 +305,7 @@ function confirmButton(verb) {
   if (verb === "fork") return "Fork"
   if (verb === "snapshot-rm") return "Delete"
   if (verb === "port-public") return "Share"
+  if (verb === "project-create") return "Create"
   return "Confirm"
 }
 
@@ -317,5 +356,5 @@ var progressText = {
   "update": "Updating", "fork": "Forking", "snapshot": "Saving snapshot", "snapshot-rm": "Deleting",
   "new-named": "Creating", "resize": "Resizing", "rename": "Renaming", "snapshot-rename": "Renaming",
   "port-private": "Making private", "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing",
-  "keep-awake": "Pinning awake", "keep-awake-off": "Unpinning"
+  "keep-awake": "Pinning awake", "keep-awake-off": "Unpinning", "project-create": "Creating project"
 }

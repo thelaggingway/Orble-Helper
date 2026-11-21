@@ -5,7 +5,10 @@ Everything the panel does goes through this script, which calls the
 `orble` CLI with a fixed argv (never a shell string), so the CLI's own
 sign-in is used and the plugin stores no token anywhere.
 
-  orble-panel status                     boxes, snapshots, account, SSH keys and local .pub keys (one JSON)
+  orble-panel [--project <slug>] <command> ...
+                                         any command below, in that Orble project (default: ORBLE_PROJECT,
+                                         else the account's default project)
+  orble-panel status                     boxes, snapshots, projects, account, SSH keys and local .pub keys (one JSON)
   orble-panel ports <box>                a box's shared ports (one JSON)
   orble-panel detail egress <box>       a box's outbound policy (one JSON)
   orble-panel detail networks|secrets   private networks or secret assignments (one JSON)
@@ -29,6 +32,7 @@ Action verbs:
   port|port-public|port-off <box> <port>
   keys-add <file.pub in ~/.ssh>
   keys-rm <SHA256:fingerprint>
+  project-create <name>
   update
 """
 
@@ -47,6 +51,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 CLI = shutil.which("orble") or os.path.expanduser("~/.local/bin/orble")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+# Project slugs (`orble project list`) and new project names (`orble project create <name>`).
+PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$")
+# `--project <slug>` given before the subcommand; every CLI call then carries it.
+PROJECT = []
 FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 KEYFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.pub$")
 HOST_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,200}\.orble\.tech$")
@@ -66,7 +75,10 @@ def config_path():
 
 
 def signed_in():
-    """True when the CLI has a stored sign-in. Only the token's presence is checked; it is never read out."""
+    """True when the CLI has a stored sign-in or an ORBLE_API_KEY (the CLI uses either).
+    Only their presence is checked; neither is ever read out."""
+    if os.environ.get("ORBLE_API_KEY"):
+        return True
     try:
         with open(config_path()) as f:
             d = json.load(f)
@@ -82,7 +94,7 @@ def clean(text):
 def cli(args, timeout=60):
     """Run the CLI with no stdin. Returns (code, stdout, stderr); code 3 means it wanted to sign in."""
     try:
-        p = subprocess.Popen([CLI, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        p = subprocess.Popen([CLI, *PROJECT, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, env=ENV)
     except (FileNotFoundError, PermissionError):
         return 127, "", "orble CLI not found"
@@ -249,6 +261,8 @@ def parse_boxes_json(text):
             "active": since(b.get("last_active_at")) if b.get("last_active_at") else "",
             "flags": ["desktop"] if b.get("desktop") is True else [],
             "forkedFrom": fork_parent(b),
+            # The snapshot a box was made from (`orble new --from`), when ls --json has one.
+            "fromSnapshot": b["snapshot"] if NAME_RE.fullmatch(str(b.get("snapshot") or "")) else "",
             "keepAwake": b.get("keep_awake") is True,
         })
     return fork_order(boxes)
@@ -312,6 +326,8 @@ def parse_snapshots_json(text):
         snaps.append({
             "name": x["name"],
             "gallery": x.get("gallery") is True,
+            # Gallery entries describe themselves ("for E2B's code interpreter SDK").
+            "about": s(re.sub(r"[\x00-\x1f\x7f]", " ", str(x.get("about") or "")), 80),
             "alias": x["alias"] if NAME_RE.fullmatch(str(x.get("alias") or "")) else "",
             "box": box if NAME_RE.match(box) else "",
             "state": s(state, 32) if re.fullmatch(r"[a-z][a-z -]*", state) else "unknown",
@@ -385,13 +401,32 @@ def local_keys(uploaded):
     return out
 
 
+def parse_projects(text):
+    """`orble project list`: '<slug>  <Name>' per line."""
+    projects = []
+    for l in clean(text).splitlines()[:50]:
+        m = re.match(r"^([a-z0-9][a-z0-9-]{0,62})\s{2,}(\S.*?)\s*$", l)
+        if m:
+            projects.append({"slug": m[1], "name": s(m[2], 40)})
+    return projects
+
+
+def current_project():
+    """The project the CLI acts on: --project, else ORBLE_PROJECT, else "" (the account's default)."""
+    if PROJECT:
+        return PROJECT[1]
+    env = os.environ.get("ORBLE_PROJECT", "")
+    return env if PROJECT_RE.fullmatch(env) else ""
+
+
 def viewer():
     return next((v for v in VIEWERS if shutil.which(v)), "")
 
 
 def status():
     out = {"ok": True, "error": "", "authError": False, "account": None, "boxes": [], "snapshots": [],
-           "snapshotsSupported": False, "keys": [], "localKeys": [], "viewer": viewer()}
+           "snapshotsSupported": False, "keys": [], "localKeys": [], "viewer": viewer(),
+           "project": current_project(), "projects": [], "projectMissing": False}
     if not os.access(CLI, os.X_OK):
         out.update(ok=False, error="The orble CLI isn't installed (see orble.tech/docs)")
         print(json.dumps(out))
@@ -400,14 +435,23 @@ def status():
         out.update(ok=False, authError=True, error="Not signed in to Orble")
         print(json.dumps(out))
         return
-    calls = {"help": ["--help"], "ls": ["ls", "--json"], "snapshots": ["snapshots", "--json"], "account": ["account"], "keys": ["keys"]}
+    calls = {"help": ["--help"], "ls": ["ls", "--json"], "snapshots": ["snapshots", "--json"], "account": ["account"],
+             "keys": ["keys"], "projects": ["project", "list"]}
     with ThreadPoolExecutor(len(calls)) as ex:
         futures = {k: ex.submit(cli, v, 30) for k, v in calls.items()}
         res = {k: f.result() for k, f in futures.items()}
 
+    # Projects (CLI 4af3402c): boxes, private snapshots, networks and secrets belong to one.
+    _, help_out, help_err = res["help"]
+    code, text, _ = res["projects"]
+    if code == 0 and re.search(r"^  project ", help_out + help_err, re.M):
+        out["projects"] = parse_projects(text)
     code, text, err = res["ls"]
     if code != 0:
-        out.update(ok=False, authError=code == 3, error=(last_lines(err, text) or f"exit {code}")[:300])
+        # The picked project was deleted, or ORBLE_PROJECT names another account's.
+        missing = bool(out["project"]) and "project not found" in (err + text).lower()
+        out.update(ok=False, authError=code == 3, projectMissing=missing,
+                   error=(last_lines(err, text) or f"exit {code}")[:300])
         print(json.dumps(out))
         return
     boxes = parse_boxes_json(text)
@@ -420,7 +464,6 @@ def status():
             return
         boxes = parse_boxes(text)
     out["boxes"] = boxes
-    _, help_out, help_err = res["help"]
     out["modernCli"] = bool(re.search(r"^  resize ", help_out + help_err, re.M))
     out["keepAwakeSupported"] = bool(re.search(r"^  keep-awake ", help_out + help_err, re.M))
     code, text, _ = res["snapshots"]
@@ -548,11 +591,17 @@ def secret_name(name):
 
 
 def secret_set(argv):
-    name, host, header, template, mode, *boxes = argv
+    """secret-set NAME HOSTS HEADER FORMAT MODE [box...]. HOSTS is comma-separated (the first one
+    is the $NAME_URL gateway's); an empty HEADER or FORMAT leaves it to Orble's default for the host."""
+    name, hosts, header, template, mode, *boxes = argv
     secret_name(name)
-    if not DOMAIN_RE.fullmatch(host) or not HEADER_RE.fullmatch(header):
-        raise SystemExit("Invalid destination host or HTTP header")
-    if len(template) > 100 or template.count("{}") != 1 or not template.isascii() or not template.isprintable():
+    host_list = hosts.split(",")
+    if not 1 <= len(host_list) <= 20 or len(set(host_list)) != len(host_list) \
+            or not all(DOMAIN_RE.fullmatch(h) for h in host_list):
+        raise SystemExit("Invalid destination host")
+    if header and not HEADER_RE.fullmatch(header):
+        raise SystemExit("Invalid HTTP header")
+    if template and (len(template) > 100 or template.count("{}") != 1 or not template.isascii() or not template.isprintable()):
         raise SystemExit("The value format must contain exactly one {}")
     if mode not in ("scoped", "all", "scoped-intercept", "all-intercept"):
         raise SystemExit("Invalid secret scope")
@@ -562,12 +611,19 @@ def secret_set(argv):
         raise SystemExit("Open secret entry in a terminal")
     if not signed_in():
         raise SystemExit("Sign in to Orble first")
-    args = ["secret", "set", name, "--host", host, "--header", header, "--format", template]
+    args = ["secret", "set", name]
+    for host in host_list:
+        args.extend(["--host", host])
+    if header:
+        args.extend(["--header", header])
+    if template:
+        args.extend(["--format", template])
     for box in boxes:
         args.extend(["--box", check_name(box)])
     if mode.endswith("-intercept"):
         args.append("--intercept")
-    in_terminal(f"Set {name} for {host}", args, always=True)
+    where = f" in project {PROJECT[1]}" if PROJECT else ""
+    in_terminal(f"Set {name} for {', '.join(host_list)}{where}", args, always=True)
 
 
 def parse_egress(text):
@@ -610,6 +666,9 @@ def parse_networks(text):
 
 
 def parse_secrets(text):
+    """`orble secret ls`, one secret per line (CLI 4af3402c):
+    'GH_TOKEN  api.github.com,github.com  all boxes in project  intercept' or 'OH_KEY  example.com  k7kq, pqz3'.
+    Boxes are their stable names. Empty: 'no secrets'."""
     if re.fullmatch(r"No secrets(?:[. ].*)?", text.strip(), re.I):
         return []
     lines = text.strip().splitlines()
@@ -617,15 +676,20 @@ def parse_secrets(text):
         raise ValueError()
     secrets = []
     for row in lines:
-        name, hosts, scope = re.split(r"\s{2,}", row.strip(), maxsplit=2)
-        host_list = re.split(r"[, ]+", hosts)
-        if not SECRET_RE.fullmatch(name) or not all(DOMAIN_RE.fullmatch(h) for h in host_list):
+        cells = re.split(r"\s{2,}", row.strip())
+        intercept = len(cells) == 4 and cells[3] == "intercept"
+        if len(cells) != 3 and not intercept:
             raise ValueError()
-        all_boxes = scope.lower() in ("all", "all boxes", "*")
-        boxes = [] if all_boxes else re.split(r"[, ]+", scope)
+        name, hosts, scope = cells[:3]
+        host_list = hosts.split(",")
+        if not SECRET_RE.fullmatch(name) or not 1 <= len(host_list) <= 20 \
+                or not all(DOMAIN_RE.fullmatch(h) for h in host_list):
+            raise ValueError()
+        all_boxes = scope.lower() in ("all boxes in project", "all boxes", "all")
+        boxes = [] if all_boxes else re.split(r",\s*", scope)
         if not all(NAME_RE.fullmatch(b) for b in boxes):
             raise ValueError()
-        secrets.append({"name": name, "hosts": host_list, "boxes": boxes, "all": all_boxes})
+        secrets.append({"name": name, "hosts": host_list, "boxes": boxes, "all": all_boxes, "intercept": intercept})
     return secrets
 
 
@@ -633,7 +697,8 @@ def detail(kind, target, demo):
     actions = {
         "egress": (["net", target], parse_egress, "blocked\nallow  example.com"),
         "networks": (["net", "ls"], parse_networks, "build  10.240.0.0/24\n  10.240.0.2  k7f2.build.internal"),
-        "secrets": (["secret", "ls"], parse_secrets, "EXAMPLE_KEY  example.com  m3qa"),
+        "secrets": (["secret", "ls"], parse_secrets,
+                    "EXAMPLE_KEY  api.example.com  m3qa\nGH_TOKEN  api.github.com,github.com  all boxes in project  intercept"),
     }
     if kind not in actions or (kind == "egress") != bool(target):
         raise SystemExit("Invalid detail request")
@@ -689,6 +754,11 @@ def extended_action(verb, rest):
         return ["net", verb[4:], check_name(rest[0]), entry]
     if verb == "secret-rm" and len(rest) == 1:
         return ["secret", "rm", secret_name(rest[0])]
+    if verb == "project-create" and len(rest) == 1:
+        if not PROJECT_NAME_RE.fullmatch(rest[0]):
+            raise SystemExit("Project names are 1 to 40 letters, digits, spaces, dots, dashes or underscores")
+        PROJECT.clear()  # a project is made for the account, whichever one is picked
+        return ["project", "create", rest[0]]
     return None
 
 
@@ -743,6 +813,8 @@ def action(argv):
         if args is None:
             raise SystemExit(f"unknown action or invalid arguments: {verb}")
         timeout, text = 300, "Orble updated: " + verb.replace("-", " ")
+        if verb == "project-create":
+            text = f"Project {rest[0]} created"
 
     if not signed_in():
         notify(f"Orble: {verb} failed", "Not signed in. Use Sign in in the panel, or run orble login.", urgent=True)
@@ -810,7 +882,7 @@ def hold(code, always=False):
 def in_terminal(title, args, always=False):
     print(f"\033[1mOrble\033[0m · {title}", flush=True)
     try:
-        code = subprocess.call([CLI, *args], env=dict(os.environ))
+        code = subprocess.call([CLI, *PROJECT, *args], env=dict(os.environ))
     except OSError as e:
         print(f"Could not run orble: {e}")
         code = 127
@@ -835,7 +907,7 @@ def exit_node(argv):
         print("Not signed in to Orble", flush=True)
         sys.exit(3)
     sys.stdout.flush()
-    os.execve(CLI, [CLI, "exit-node", *flags, *boxes], ENV)
+    os.execve(CLI, [CLI, *PROJECT, "exit-node", *flags, *boxes], ENV)
 
 
 # ---------- demo data (the panel's "Demo data" setting; for screenshots) ----------
@@ -860,6 +932,8 @@ def demo_status():
              "disk": "1.2 GB", "created": "2d ago"},
         ],
         "snapshotsSupported": True, "modernCli": True, "keepAwakeSupported": True,
+        "project": current_project(), "projectMissing": False,
+        "projects": [{"slug": "default", "name": "Default"}, {"slug": "client-work", "name": "Client work"}],
         "keys": [{"name": "laptop", "fingerprint": fp("A")}, {"name": "desktop", "fingerprint": fp("B")}],
         "localKeys": [
             {"file": "id_ed25519.pub", "fingerprint": fp("A"), "comment": "you@laptop", "type": "ED25519", "added": True},
@@ -887,10 +961,16 @@ def demo_exit_node(argv):
 
 
 def main():
-    if len(sys.argv) < 2:
+    argv = sys.argv[1:]
+    if argv[:1] == ["--project"]:
+        if len(argv) < 2 or not PROJECT_RE.fullmatch(argv[1]):
+            raise SystemExit("invalid project slug")
+        PROJECT[:] = argv[:2]
+        argv = argv[2:]
+    if not argv:
         print(__doc__)
         sys.exit(2)
-    cmd, rest = sys.argv[1], sys.argv[2:]
+    cmd, rest = argv[0], argv[1:]
     demo = rest[-1:] == ["--demo"]
     if cmd == "detail" and len(rest) - int(demo) in (1, 2):
         args = rest[:-1] if demo else rest

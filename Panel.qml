@@ -36,6 +36,47 @@ Panel {
   readonly property bool demo: flag("demoMode", false)
   readonly property var demoArg: demo ? ["--demo"] : []
 
+  // ---------- project ----------
+  // Boxes, private snapshots, networks and secrets belong to one Orble project, and the CLI acts on one
+  // at a time (orble --project <slug>). The panel starts in the `project` setting (else ORBLE_PROJECT,
+  // else the account's default); the PROJECT row switches it until the shell restarts.
+  property string project: Model.validProject(setting("project", "")) ? setting("project", "") : ""
+  property var projects: []
+  property bool projectCreateOpen: false
+  property string projectNewName: ""
+  readonly property string activeProject: Model.activeProject(project, status, projects)
+  readonly property string projectName: Model.projectLabel(activeProject, projects)
+  readonly property var projectArgs: Model.validProject(project) ? ["--project", project] : []
+  // Every helper call: argv for orble-panel in the current project.
+  function cmd(args) { return [root.helper].concat(root.projectArgs, args) }
+
+  function switchProject(slug) {
+    if (!Model.validProject(slug) || slug === root.activeProject) return
+    root.project = slug
+    root.status = null
+    root.deferredStatus = null
+    root.expandedBox = ""
+    root.egressBox = ""
+    root.renameBox = ""
+    root.snapFor = ""
+    root.fromSnap = ""
+    root.ports = {}
+    root.details = {}
+    root.detailRequests = {}
+    if (!root.exitOn) root.exitBoxes = []
+    if (statusProc.running) root.statusReload = true
+    else refresh()
+    reloadOpenDetails()
+  }
+
+  function createProject() {
+    var n = root.projectNewName.trim()
+    if (!Model.validProjectName(n)) return
+    root.projectCreateOpen = false
+    root.projectNewName = ""
+    request("project-create", n, [n])
+  }
+
   property var status: null
   property var deferredStatus: null
   property bool loading: false
@@ -69,7 +110,15 @@ Panel {
   readonly property int pendingCount: Object.keys(pending).length
 
   property string newName: ""
-  property string proSection: ""
+  // Collapsible sections: boxes and snapshots start open, everything else closed (for this shell session).
+  property bool projectsOpen: false
+  property bool creditOpen: false
+  property bool boxesOpen: true
+  property bool snapshotsOpen: true
+  property bool networksOpen: false
+  property bool secretsOpen: false
+  property bool exitOpen: false
+  property bool keysOpen: false
   property string egressBox: ""
   property string renameBox: ""
   property string renameSnapshot: ""
@@ -90,7 +139,7 @@ Panel {
 
   function loadDetail(kind, target) {
     var key = kind + (target ? ":" + target : "")
-    var args = [root.helper, "detail", kind]
+    var args = root.cmd(["detail", kind])
     if (target) args.push(target)
     var seq = ++root.detailSequence
     var proc = detailComponent.createObject(root, { key: key, sequence: seq, command: args.concat(root.demoArg) })
@@ -119,18 +168,29 @@ Panel {
     if (root.egressBox) loadDetail("egress", root.egressBox)
   }
 
-  function togglePro(kind) {
-    if (root.proSection) invalidateDetail(root.proSection)
-    root.proSection = root.proSection === kind ? "" : kind
-    if (root.proSection) loadDetail(kind, "")
+  // Private networks and secrets load when their section opens (one CLI call each).
+  function detailOpen(kind) { return kind === "networks" ? root.networksOpen : kind === "secrets" ? root.secretsOpen : false }
+
+  function toggleDetail(kind) {
+    var open = !detailOpen(kind)
+    if (kind === "networks") root.networksOpen = open
+    else root.secretsOpen = open
+    if (open) loadDetail(kind, "")
+    else invalidateDetail(kind)
   }
 
-  function submitSecret(name, host, header, format, all, intercept, boxes, replacing) {
+  function reloadOpenDetails() {
+    if (root.networksOpen) loadDetail("networks", "")
+    if (root.secretsOpen) loadDetail("secrets", "")
+  }
+
+  // hosts: comma-separated; an empty header or format leaves it to Orble's default for the first host.
+  function submitSecret(name, hosts, header, format, all, intercept, boxes, replacing) {
     var mode = (all ? "all" : "scoped") + (intercept ? "-intercept" : "")
-    var args = ["secret-set", name, host, header, format, mode].concat(all ? [] : boxes)
+    var args = ["secret-set", name, hosts, header, format, mode].concat(all ? [] : boxes)
     if (replacing || all || intercept)
-      request("secret-set", name, args, (replacing ? " This replaces the existing value, scope, header settings, and interception choice." : "")
-        + (all ? " This applies to every box on your account." : "")
+      request("secret-set", name, args, (replacing ? " This replaces the existing value, hosts, scope, header settings, and interception choice." : "")
+        + (all ? " This applies to every current and future box in the " + root.projectName + " project." : "")
         + (intercept ? " HTTPS interception adds Orble’s CA to the selected boxes." : ""))
     else
       openTerminal(args)
@@ -151,6 +211,8 @@ Panel {
   readonly property var keys: healthy ? status.keys : []
   readonly property var snapshots: healthy ? status.snapshots : []
   readonly property bool hasSnapshots: healthy && status.snapshotsSupported
+  readonly property var ownSnapshots: snapshots.filter(function(x) { return !x.gallery })
+  readonly property var gallerySnapshots: snapshots.filter(function(x) { return x.gallery === true })
   readonly property var newLocalKeys: healthy ? status.localKeys.filter(function(k) { return !k.added }) : []
   readonly property bool hasViewer: healthy && status.viewer !== ""
   readonly property bool lowCredit: Model.creditLow(account, lowCreditUSD)
@@ -177,6 +239,8 @@ Panel {
     root.loading = false
     var next = Model.parseStatus(text)
     if (!next) return
+    // A status from before a project switch (the helper names the project it read).
+    if (root.project && next.project !== root.project) return
     if (root.editorFocus && next.ok) {
       root.deferredStatus = next
       return
@@ -189,6 +253,7 @@ Panel {
     root.status = next
     root.lastRefreshAt = Date.now() / 1000
     root.now = root.lastRefreshAt
+    if (next.projects.length) root.projects = next.projects
     // Drop exit-node picks for boxes that are gone.
     var names = next.boxes.map(function(b) { return b.name })
     var kept = root.exitBoxes.filter(function(n) { return names.indexOf(n) >= 0 })
@@ -205,7 +270,7 @@ Panel {
       if (afterWrite) setMap("portReload", name, true)
       return
     }
-    var proc = portsComponent.createObject(root, { box: name, command: [root.helper, "ports", name].concat(root.demoArg) })
+    var proc = portsComponent.createObject(root, { box: name, command: root.cmd(["ports", name]).concat(root.demoArg) })
     if (!proc) return
     setMap("portsLoading", name, true)
     proc.running = true
@@ -286,7 +351,7 @@ Panel {
     if (root.demo) { demoNotice(); return }
     var key = target || args[0] || verb
     if (root.pending[key]) return
-    var proc = opComponent.createObject(root, { target: key, command: [root.helper, "action", verb].concat(args) })
+    var proc = opComponent.createObject(root, { target: key, command: root.cmd(["action", verb].concat(args)) })
     if (!proc) return
     setPending(key, verb)
     proc.running = true
@@ -298,7 +363,7 @@ Panel {
     if (m) loadPorts(m[1], true)
     if (target === "networks" || target === "secrets") {
       invalidateDetail(target)
-      if (root.opened && root.proSection === target) loadDetail(target, "")
+      if (root.opened && detailOpen(target)) loadDetail(target, "")
     }
     if (target.indexOf("egress:") === 0) {
       invalidateDetail(target)
@@ -310,12 +375,12 @@ Panel {
   // A helper subcommand in a terminal window: ssh, desktop, topup, login.
   function openTerminal(args) {
     if (root.demo) { demoNotice(); return }
-    Quickshell.execDetached(["omarchy-launch-tui", "--app-id=org.omarchy.orble", root.helper].concat(args))
+    Quickshell.execDetached(["omarchy-launch-tui", "--app-id=org.omarchy.orble"].concat(root.cmd(args)))
     root.close()
     wakeRefresh.restart()
   }
 
-  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public", "resize", "net-block", "net-open", "net-allow", "net-deny", "net-rm", "net-delete", "net-leave", "secret-rm", "secret-set"]
+  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public", "resize", "net-block", "net-open", "net-allow", "net-deny", "net-rm", "net-delete", "net-leave", "secret-rm", "secret-set", "project-create"]
 
   // Destructive or paying verbs go through the confirm dialog first.
   function request(verb, target, args, extra) {
@@ -348,6 +413,8 @@ Panel {
       runAction(c.verb, c.args, "egress:" + c.args[0])
     } else if (c.verb === "snapshot-rm") {
       runAction(c.verb, c.args, "snap:" + c.args[0])
+    } else if (c.verb === "project-create") {
+      runAction(c.verb, c.args, "project-create")
     } else {
       runAction(c.verb, c.args)
     }
@@ -409,7 +476,7 @@ Panel {
   function startExit() {
     if (root.exitOn || !root.healthy) return
     root.exitLine = ""
-    exitProc.command = [root.helper, "exit-node"].concat(Model.exitNodeArgs(root.exitOpts)).concat(root.demoArg)
+    exitProc.command = root.cmd(["exit-node"]).concat(Model.exitNodeArgs(root.exitOpts)).concat(root.demoArg)
     exitProc.running = true
   }
 
@@ -437,7 +504,7 @@ Panel {
     })
   }
 
-  onDemoChanged: { stopExit(); root.status = null; root.deferredStatus = null; root.details = {}; root.detailRequests = {}; root.proSection = ""; root.egressBox = ""; refresh() }
+  onDemoChanged: { stopExit(); root.status = null; root.deferredStatus = null; root.details = {}; root.detailRequests = {}; root.egressBox = ""; refresh(); if (root.opened) reloadOpenDetails() }
 
   onOpenedChanged: {
     if (!opened) {
@@ -445,14 +512,15 @@ Panel {
       root.topupOpen = false
       root.snapFor = ""
       root.fromSnap = ""
-      if (root.proSection) invalidateDetail(root.proSection)
+      invalidateDetail("networks")
+      invalidateDetail("secrets")
       if (root.egressBox) invalidateDetail("egress:" + root.egressBox)
       return
     }
     root.now = Date.now() / 1000
     if (root.now - root.lastRefreshAt > 8) refresh()
     if (root.expandedBox) loadPorts(root.expandedBox)
-    if (root.proSection) loadDetail(root.proSection, "")
+    reloadOpenDetails()
     if (root.egressBox) loadDetail("egress", root.egressBox)
   }
 
@@ -470,7 +538,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: [root.helper, "status"].concat(root.demoArg)
+    command: root.cmd(["status"]).concat(root.demoArg)
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyStatus(text) }
     onExited: function(exitCode) {
       if (exitCode !== 0) root.loading = false
@@ -674,7 +742,7 @@ Panel {
               width: parent.width
               wrapMode: Text.Wrap
               maximumLineCount: 4
-              text: root.status ? root.status.error : ""
+              text: root.status ? root.status.error + (root.status.projectMissing ? " Pick another project above." : "") : ""
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
             }
@@ -688,6 +756,64 @@ Panel {
               fontFamily: root.fontFamily
               bordered: true
               onClicked: root.signIn()
+            }
+          }
+
+          // ---------- project ----------
+          SectionHeader {
+            visible: root.projects.length > 0 && (root.status === null || root.status.authError !== true)
+            title: "PROJECT"
+            summary: root.projectName + (root.projects.length > 1 ? "  ·  " + root.projects.length + " projects" : "")
+            open: root.projectsOpen
+            onToggled: root.projectsOpen = !root.projectsOpen
+          }
+
+          Flow {
+            visible: root.projectsOpen && root.projects.length > 0 && (root.status === null || root.status.authError !== true)
+            width: parent.width
+            spacing: Style.space(5)
+            Repeater {
+              model: root.projects
+              delegate: ActionButton {
+                required property var modelData
+                text: modelData.name || modelData.slug
+                tooltipText: "orble --project " + modelData.slug
+                active: modelData.slug === root.activeProject
+                onClicked: { root.switchProject(modelData.slug); root.projectsOpen = false }
+              }
+            }
+            ActionButton {
+              id: projectPlus
+              iconText: Model.icons.plus
+              text: "New"
+              tooltipText: "New project (orble project create)"
+              active: root.projectCreateOpen
+              enabled: !root.pending["project-create"]
+              onClicked: root.projectCreateOpen = !root.projectCreateOpen
+            }
+          }
+
+          Row {
+            visible: root.projectsOpen && root.projectCreateOpen && root.projects.length > 0
+            width: parent.width
+            spacing: Style.space(6)
+            KeyField {
+              width: parent.width - projectCreate.width - Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              maximumLength: 40
+              allowed: /[A-Za-z0-9 ._-]/
+              placeholderText: "Project name"
+              text: root.projectNewName
+              onEdited: function(v) { root.projectNewName = v }
+              onAccepted: root.createProject()
+              onEscaped: root.projectCreateOpen = false
+            }
+            ActionButton {
+              id: projectCreate
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Create"
+              enabled: Model.validProjectName(root.projectNewName.trim())
+              onClicked: root.createProject()
             }
           }
 
@@ -727,15 +853,16 @@ Panel {
           CreditCard { visible: root.showCredit && root.account !== null }
 
           // ---------- boxes ----------
-          PanelSectionHeader {
+          SectionHeader {
             visible: root.healthy
-            text: "BOXES"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+            title: "BOXES"
+            summary: root.boxes.length + (root.running ? "  ·  " + root.running + " running" : "")
+            open: root.boxesOpen
+            onToggled: root.boxesOpen = !root.boxesOpen
           }
 
           PlainText {
-            visible: root.healthy && root.boxes.length === 0 && !root.pending["new"]
+            visible: root.healthy && root.boxesOpen && root.boxes.length === 0 && !root.pending["new"]
             text: "No boxes. Use + to create one."
             color: root.muted
             font.pixelSize: Style.font.bodySmall
@@ -754,70 +881,97 @@ Panel {
           }
 
           Repeater {
-            model: root.boxes
+            model: root.boxesOpen ? root.boxes : []
             delegate: BoxRow {}
           }
 
-          // ---------- snapshots (always listed, like boxes) ----------
-          PanelSectionHeader {
+          // ---------- snapshots: this project's, then Orble's gallery (in every project) ----------
+          SectionHeader {
             visible: root.hasSnapshots
-            text: "SNAPSHOTS  " + root.snapshots.length
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+            title: "SNAPSHOTS"
+            summary: root.ownSnapshots.length + (root.gallerySnapshots.length ? "  ·  " + root.gallerySnapshots.length + " in the gallery" : "")
+            open: root.snapshotsOpen
+            onToggled: root.snapshotsOpen = !root.snapshotsOpen
           }
 
           Repeater {
-            model: root.hasSnapshots ? root.snapshots : []
+            model: root.hasSnapshots && root.snapshotsOpen ? root.ownSnapshots : []
             delegate: SnapshotRow {}
           }
 
           PlainText {
-            visible: root.hasSnapshots && root.snapshots.length === 0
+            visible: root.hasSnapshots && root.snapshotsOpen && root.ownSnapshots.length === 0
             width: parent.width
             wrapMode: Text.Wrap
-            text: "No snapshots. Open a box and use Snapshot to save one; new boxes can start from it."
+            text: "No snapshots in " + root.projectName + ". Open a box and use Snapshot to save one; new boxes can start from it."
             color: root.muted
             font.pixelSize: Style.font.caption
           }
 
+          PlainText {
+            visible: root.hasSnapshots && root.snapshotsOpen && root.gallerySnapshots.length > 0
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "Orble gallery, the same in every project"
+            color: root.muted
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          Repeater {
+            model: root.hasSnapshots && root.snapshotsOpen ? root.gallerySnapshots : []
+            delegate: SnapshotRow {}
+          }
+
           PanelSeparator { visible: root.healthy; foreground: root.foreground }
 
-          Flow {
+          // ---------- private networks and secrets (Pro, per project; loaded when opened) ----------
+          SectionHeader {
             visible: root.healthy
-            width: parent.width
-            spacing: Style.space(6)
-            ActionButton { text: "Private networks"; active: root.proSection === "networks"; onClicked: root.togglePro("networks") }
-            ActionButton { text: "Secrets"; active: root.proSection === "secrets"; onClicked: root.togglePro("secrets") }
+            title: "PRIVATE NETWORKS"
+            summary: "Pro"
+            open: root.networksOpen
+            onToggled: root.toggleDetail("networks")
           }
-          NetworksCard { visible: root.healthy && root.proSection === "networks"; width: parent.width }
-          SecretsCard { visible: root.healthy && root.proSection === "secrets"; width: parent.width }
+          NetworksCard { visible: root.healthy && root.networksOpen; width: parent.width }
+
+          SectionHeader {
+            visible: root.healthy
+            title: "SECRETS"
+            summary: "Pro  ·  " + root.projectName
+            open: root.secretsOpen
+            onToggled: root.toggleDetail("secrets")
+          }
+          SecretsCard { visible: root.healthy && root.secretsOpen; width: parent.width }
+
+          PanelSeparator { visible: root.healthy; foreground: root.foreground }
 
           // ---------- exit node ----------
           ExitNodeCard { visible: root.healthy }
 
           PanelSeparator { visible: root.healthy; foreground: root.foreground }
 
-          // ---------- ssh keys (always listed) ----------
-          PanelSectionHeader {
+          // ---------- ssh keys ----------
+          SectionHeader {
             visible: root.healthy
-            text: "SSH KEYS  " + root.keys.length
-              + (root.newLocalKeys.length ? "  · " + root.newLocalKeys.length + " local not added" : "")
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+            title: "SSH KEYS"
+            summary: root.keys.length + (root.newLocalKeys.length ? "  ·  " + root.newLocalKeys.length + " local not added" : "")
+            open: root.keysOpen
+            onToggled: root.keysOpen = !root.keysOpen
           }
 
           Repeater {
-            model: root.healthy ? root.keys : []
+            model: root.healthy && root.keysOpen ? root.keys : []
             delegate: KeyRow {}
           }
 
           Repeater {
-            model: root.healthy ? root.newLocalKeys : []
+            model: root.healthy && root.keysOpen ? root.newLocalKeys : []
             delegate: LocalKeyRow {}
           }
 
           PlainText {
-            visible: root.healthy && root.keys.length === 0 && root.newLocalKeys.length === 0
+            visible: root.healthy && root.keysOpen && root.keys.length === 0 && root.newLocalKeys.length === 0
             width: parent.width
             wrapMode: Text.Wrap
             text: "No keys on the account and no .pub files in ~/.ssh. Make one with ssh-keygen -t ed25519."
@@ -986,6 +1140,54 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // A section title that opens and closes its section: chevron, title and a short summary.
+  component SectionHeader: Item {
+    id: sh
+    property string title: ""
+    property string summary: ""
+    property bool open: false
+    property color titleColor: root.muted
+    signal toggled()
+    width: column.width
+    implicitWidth: shRow.implicitWidth
+    implicitHeight: shRow.implicitHeight + Style.space(4)
+
+    Row {
+      id: shRow
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(6)
+      PlainText {
+        text: sh.open ? Model.icons.chevronDown : Model.icons.chevronRight
+        color: shMouse.containsMouse ? root.foreground : sh.titleColor
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      PlainText {
+        text: sh.title
+        color: shMouse.containsMouse ? root.foreground : sh.titleColor
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.2
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      PlainText {
+        visible: sh.summary !== ""
+        text: sh.summary
+        color: root.muted
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      id: shMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: sh.toggled()
+    }
+  }
+
   component FieldLabel: PlainText {
     width: root.labelWidth
     color: root.muted
@@ -1043,7 +1245,7 @@ Panel {
     required property string box
     readonly property string detailKey: "egress:" + box
     readonly property var result: root.details[detailKey]
-    readonly property var policy: result && result.ok ? result.data : null
+    readonly property var policy: result && result.ok === true ? result.data : null
     readonly property bool busy: !!root.pending[detailKey]
     readonly property bool canEdit: !!policy && !busy
       && !(root.exitOn && (!root.exitBoxes.length || root.exitBoxes.indexOf(box) >= 0))
@@ -1106,24 +1308,23 @@ Panel {
     spacing: Style.space(6)
     Row {
       spacing: Style.space(6)
-      PlainText { text: "Private networks" }
       ActionButton { text: "Refresh"; enabled: !networks.busy; onClicked: root.loadDetail("networks", "") }
     }
     DetailMessage { result: networks.result }
     PlainText {
-      visible: !!networks.result && networks.result.ok && networks.result.data.length === 0
+      visible: !!networks.result && networks.result.ok === true && networks.result.data.length === 0
       text: "No private networks yet."
       color: root.muted
     }
     PlainText {
-      visible: !!networks.result && networks.result.ok
+      visible: !!networks.result && networks.result.ok === true
       width: parent.width
       text: "Forks inherit membership. Connecting to a suspended member can wake it."
       color: root.muted
       wrapMode: Text.Wrap
     }
     NamedAction {
-      visible: !!networks.result && networks.result.ok
+      visible: !!networks.result && networks.result.ok === true
       width: parent.width
       placeholder: "Network name"
       buttonText: "Create network"
@@ -1131,7 +1332,7 @@ Panel {
       target: "networks"
     }
     Repeater {
-      model: networks.result && networks.result.ok ? networks.result.data : []
+      model: networks.result && networks.result.ok === true ? networks.result.data : []
       delegate: Column {
         id: network
         required property var modelData
@@ -1201,9 +1402,11 @@ Panel {
     property bool replacing: false
     property bool advanced: false
     property string secretName: ""
+    // Comma-separated; the first host is the one $NAME_URL reaches.
     property string host: ""
-    property string header: "Authorization"
-    property string format: "Bearer {}"
+    // Empty: Orble's default for the host (it knows api.anthropic.com, api.openai.com, api.github.com, ...).
+    property string header: ""
+    property string format: ""
     property bool allBoxes: false
     property bool intercept: false
     property var selected: []
@@ -1216,30 +1419,29 @@ Panel {
     spacing: Style.space(6)
     function edit(item) {
       secretName = item ? item.name : ""
-      host = item && item.hosts.length === 1 ? item.hosts[0] : ""
+      host = item ? item.hosts.join(",") : ""
       allBoxes = !!(item && item.all)
       selected = item ? item.boxes.slice() : []
-      header = "Authorization"
-      format = "Bearer {}"
-      intercept = false
+      header = ""
+      format = ""
+      intercept = !!(item && item.intercept)
       replacing = !!item
       advanced = replacing
       editing = true
     }
     Row {
       spacing: Style.space(6)
-      PlainText { text: "Managed secrets" }
       ActionButton { text: "Refresh"; enabled: !secrets.busy; onClicked: root.loadDetail("secrets", "") }
-      ActionButton { text: "Add secret"; enabled: !!secrets.result && secrets.result.ok && !secrets.busy; onClicked: secrets.edit(null) }
+      ActionButton { text: "Add secret"; enabled: !!secrets.result && secrets.result.ok === true && !secrets.busy; onClicked: secrets.edit(null) }
     }
     DetailMessage { result: secrets.result }
     PlainText {
-      visible: !!secrets.result && secrets.result.ok && secrets.result.data.length === 0
+      visible: !!secrets.result && secrets.result.ok === true && secrets.result.data.length === 0
       text: "No managed secrets yet."
       color: root.muted
     }
     Repeater {
-      model: secrets.result && secrets.result.ok ? secrets.result.data : []
+      model: secrets.result && secrets.result.ok === true ? secrets.result.data : []
       delegate: Column {
         id: savedSecret
         required property var modelData
@@ -1249,26 +1451,27 @@ Panel {
         PlainText {
           width: parent.width
           text: savedSecret.modelData.hosts.join(", ") + "  ·  "
-            + (savedSecret.modelData.all ? "All boxes" : savedSecret.modelData.boxes.map(function(b) { return root.boxLabel(b) }).join(", "))
+            + (savedSecret.modelData.all ? "All boxes in the project" : savedSecret.modelData.boxes.map(function(b) { return root.boxLabel(b) }).join(", "))
+            + (savedSecret.modelData.intercept ? "  ·  HTTPS interception" : "")
           wrapMode: Text.Wrap
           color: root.muted
         }
         Row {
           spacing: Style.space(6)
           ActionButton { text: "Replace value or scope"; enabled: !secrets.busy; onClicked: secrets.edit(savedSecret.modelData) }
-          ActionButton { text: "Remove"; enabled: !secrets.busy; onClicked: root.request("secret-rm", savedSecret.modelData.name) }
+          ActionButton { text: "Remove"; enabled: !secrets.busy; onClicked: root.request("secret-rm", savedSecret.modelData.name, null, root.projectName) }
         }
       }
     }
     Column {
-      visible: secrets.editing && !!secrets.result && secrets.result.ok
+      visible: secrets.editing && !!secrets.result && secrets.result.ok === true
       width: parent.width
       spacing: Style.space(5)
       PlainText {
         width: parent.width
         text: secrets.replacing
-          ? "Review the header, format, and interception choice before replacing this secret. Orble lists only its name, host, and scope."
-          : "Choose a destination and scope, then enter the value in Orble’s terminal prompt."
+          ? "Orble lists a secret's hosts, boxes and interception, not its header or format. Leave those empty for Orble's default, or enter custom ones again."
+          : "Boxes in " + root.projectName + " get $NAME as a placeholder that Orble swaps for the value on the way out, and $NAME_URL, a gateway to the first host. Enter the value in Orble’s terminal prompt."
         color: root.muted
         wrapMode: Text.Wrap
       }
@@ -1282,9 +1485,9 @@ Panel {
       }
       KeyField {
         width: parent.width
-        maximumLength: 253
-        allowed: /[A-Za-z0-9.-]/
-        placeholderText: "Destination host (api.example.com)"
+        maximumLength: 400
+        allowed: /[A-Za-z0-9.,-]/
+        placeholderText: "Destination hosts (api.example.com,example.com)"
         text: secrets.host
         onEdited: function(v) { secrets.host = v }
       }
@@ -1321,7 +1524,7 @@ Panel {
       KeyField {
         visible: secrets.advanced
         width: parent.width
-        placeholderText: "HTTP header"
+        placeholderText: "HTTP header (empty: Orble's default for the host)"
         text: secrets.header
         onEdited: function(v) { secrets.header = v }
       }
@@ -1330,7 +1533,7 @@ Panel {
         width: parent.width
         maximumLength: 100
         allowed: /[ -~]/
-        placeholderText: "Header format (Bearer {})"
+        placeholderText: "Value format, like Bearer {} (empty: default)"
         text: secrets.format
         onEdited: function(v) { secrets.format = v }
       }
@@ -1341,9 +1544,9 @@ Panel {
         ActionButton {
           text: "Enter value in terminal"
           enabled: !secrets.busy && /^[A-Z_][A-Z0-9_]*$/.test(secrets.secretName)
-            && /^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9]+$/.test(secrets.host)
-            && /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(secrets.header)
-            && secrets.format.split("{}").length === 2
+            && Model.validHosts(secrets.host)
+            && (secrets.header === "" || /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(secrets.header))
+            && (secrets.format === "" || secrets.format.split("{}").length === 2)
             && (secrets.replacing || !secrets.nameExists)
             && (secrets.allBoxes || (secrets.selected.length > 0 && !secrets.missingBoxes.length))
           onClicked: root.submitSecret(secrets.secretName, secrets.host, secrets.header, secrets.format,
@@ -1369,13 +1572,12 @@ Panel {
         width: parent.width
         spacing: Style.space(8)
 
-        PlainText {
+        SectionHeader {
           id: creditLabel
-          text: Model.icons.cash + "  CREDIT"
-          color: root.muted
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          font.letterSpacing: 1.2
+          width: implicitWidth
+          title: "CREDIT"
+          open: root.creditOpen
+          onToggled: root.creditOpen = !root.creditOpen
           anchors.verticalCenter: parent.verticalCenter
         }
 
@@ -1401,6 +1603,7 @@ Panel {
     }
 
     PlainText {
+      visible: root.creditOpen
       width: parent.width
       text: cc.a ? [cc.a.email, cc.a.domain ? "<box>." + cc.a.domain + ".orble.tech" : ""].filter(function(p) { return p }).join(" · ") : ""
       color: root.lowCredit ? root.urgent : root.muted
@@ -1457,12 +1660,12 @@ Panel {
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(2)
 
-        PlainText {
-          text: Model.icons.earth + "  EXIT NODE"
-          color: root.exitOn ? root.accent : root.muted
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          font.letterSpacing: 1.2
+        SectionHeader {
+          width: parent.width
+          title: "EXIT NODE"
+          titleColor: root.exitOn ? root.accent : root.muted
+          open: root.exitOpen
+          onToggled: root.exitOpen = !root.exitOpen
         }
 
         PlainText {
@@ -1502,7 +1705,7 @@ Panel {
       spacing: Style.space(6)
       enabled: !root.exitOn
       opacity: enabled ? 1 : 0.5
-      visible: root.boxes.length > 0
+      visible: root.exitOpen && root.boxes.length > 0
 
       PlainText {
         text: "Boxes"
@@ -1517,9 +1720,9 @@ Panel {
         model: root.boxes
         ActionButton {
           required property var modelData
-          text: modelData.name
+          text: root.boxLabel(modelData.name)
           active: root.exitBoxes.indexOf(modelData.name) >= 0
-          tooltipText: "Route " + modelData.name + " through this machine (none picked: the boxes switched on in the dashboard)"
+          tooltipText: "Route " + root.boxLabel(modelData.name) + " through this machine (none picked: the boxes switched on in the dashboard)"
           onClicked: root.exitBoxes = Model.toggled(root.exitBoxes, modelData.name)
         }
       }
@@ -1530,6 +1733,7 @@ Panel {
       spacing: Style.space(6)
       enabled: !root.exitOn
       opacity: enabled ? 1 : 0.5
+      visible: root.exitOpen
 
       PlainText {
         text: "Options"
@@ -1995,7 +2199,7 @@ Panel {
         }
         PlainText {
           width: parent.width
-          text: srow.busyVerb ? Model.progressText[srow.busyVerb] + "…" : (srow.sn.gallery ? "Gallery · " : "") + Model.snapshotLine(srow.sn)
+          text: srow.busyVerb ? Model.progressText[srow.busyVerb] + "…" : Model.snapshotLine(srow.sn)
           color: root.muted
           font.pixelSize: Style.font.caption
         }

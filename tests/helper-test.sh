@@ -10,6 +10,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home/.ssh" "$T/config/orble"
 LOG="$T/calls.log"
 NOTES="$T/notes.log"
+unset ORBLE_API_KEY ORBLE_PROJECT
 export FAKE_LOG="$LOG" FAKE_NOTES="$NOTES" FAKE_MODE=ok HOME="$T/home" XDG_CONFIG_HOME="$T/config"
 echo '{"api":"https://orble.tech","token":"fake-token","domain":"zippy-summit"}' > "$T/config/orble/config.json"
 
@@ -23,6 +24,11 @@ ln -s /etc/hostname "$T/home/.ssh/evil.pub"
 cat > "$T/bin/orble" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_LOG"
+if [[ ${1:-} == --project ]]; then
+  # Like the real CLI, project list still works when the picked project is gone.
+  [[ $2 == nope && $3 != project && $3 != --help ]] && { echo "orble: Project not found." >&2; exit 1; }
+  shift 2
+fi
 if [[ $FAKE_MODE == auth ]]; then
   echo "Not signed in yet. Signing in first."; echo "Opening https://orble.tech/cli?code=AAAA-BBBB"; sleep 30; exit 0
 fi
@@ -67,9 +73,15 @@ case "$*" in
     if [[ ${FAKE_DETAILS:-} == free ]]; then echo 'orble: box networks require Pro' >&2; exit 1; fi
     if [[ ${FAKE_DETAILS:-} == malformed ]]; then echo 'unknown output'; exit 0; fi
     printf 'my-net  10.240.0.0/24\n  10.240.0.2       rku7.my-net.internal\n' ;;
-  secret\ ls) printf 'EXAMPLE_KEY  example.com  rku7,base1\n' ;;
+  secret\ ls) [[ -n ${FAKE_SECRETS:-} ]] && { printf '%b' "$FAKE_SECRETS"; exit 0; }
+    printf '%s\n' 'EXAMPLE_KEY  example.com  rku7, base1' \
+      'GH_TOKEN  api.github.com,github.com,uploads.github.com  all boxes in project  intercept' \
+      'SCOPED_ONE  api.example.com  rku7  intercept' ;;
+  project\ list) printf 'default  Default\nclient-work  Client work\n-rf  Evil\n' ;;
+  project\ create\ *) echo "✓ created project ${3}" ;;
   rm\ broken*) echo "orble: no such box" >&2; exit 1 ;;
   --help) printf 'Orble · Sandboxes for AI agents\n\n  resize <box> <m|l>     restart a box at a larger size\n'
+    [[ -n ${FAKE_OLD_CLI:-} ]] || printf '  project list | create <name>  List projects or create one\n'
     [[ -n ${FAKE_OLD_CLI:-} ]] || printf "  keep-awake <box> [off]  don't suspend when idle; off undoes it\n" ;;
   keep-awake\ *) [[ -n ${FAKE_OLD_CLI:-} ]] && { echo "Orble · Sandboxes for AI agents"; exit 0; }
     [[ $3 == off ]] && echo "$2  ● running, suspends when idle" || echo "$2  ● running, kept awake" ;;
@@ -139,7 +151,7 @@ d = json.loads(sys.argv[1])
 assert d["snapshotsSupported"] is True
 sn = d["snapshots"]
 assert [x["name"] for x in sn] == ["plugin-test", "big"], sn
-assert sn[0] == {"name": "plugin-test", "alias": "renamed-snapshot", "gallery": False, "box": "nvbg", "state": "ready", "size": "m", "vcpus": 4, "memGiB": 8,
+assert sn[0] == {"name": "plugin-test", "alias": "renamed-snapshot", "gallery": False, "about": "", "box": "nvbg", "state": "ready", "size": "m", "vcpus": 4, "memGiB": 8,
                  "disk": "409 MB", "created": sn[0]["created"]} and sn[0]["created"].endswith("ago"), sn[0]
 assert sn[1]["box"] == "" and sn[1]["state"] == "unknown" and sn[1]["size"] == "l" and sn[1]["disk"] == "2.5 GB", sn[1]
 EOF
@@ -172,6 +184,10 @@ python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is Fal
 [[ ! -s $LOG ]] || fail "CLI ran while signed out: $(cat "$LOG")"
 set +e; "$HELPER" action suspend rku7 >/dev/null 2>&1; code=$?; set -e
 [[ $code -eq 3 && ! -s $LOG ]] || fail "action ran while signed out (code $code)"
+# The CLI also signs in with ORBLE_API_KEY and no stored login.
+out=$(ORBLE_API_KEY=orble_fake "$HELPER" status)
+python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True' "$out" || fail "ORBLE_API_KEY sign-in"
+: > "$LOG"
 mv "$T/config/orble/config.off" "$T/config/orble/config.json"
 start=$(date +%s)
 out=$(FAKE_MODE=auth "$HELPER" status)
@@ -374,7 +390,17 @@ ok
 # --- On-demand Pro data and fixed arguments ---
 "$HELPER" detail egress rku7 | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["data"]["mode"]=="blocked" and len(d["data"]["rules"])==2'
 "$HELPER" detail networks | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"][0]["members"][0]["box"]=="rku7"'
-"$HELPER" detail secrets | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"][0]["boxes"]==["rku7","base1"]'
+"$HELPER" detail secrets | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)["data"]
+assert d[0] == {"name": "EXAMPLE_KEY", "hosts": ["example.com"], "boxes": ["rku7", "base1"], "all": False, "intercept": False}, d[0]
+assert d[1] == {"name": "GH_TOKEN", "hosts": ["api.github.com", "github.com", "uploads.github.com"], "boxes": [], "all": True, "intercept": True}, d[1]
+assert d[2]["boxes"] == ["rku7"] and d[2]["intercept"] is True and not d[2]["all"], d[2]
+'
+for bad in 'KEY  example.com  rku7  bogus' 'KEY  example.com  $(id)' 'KEY  evil host  all boxes in project' 'KEY  example.com'; do
+  FAKE_SECRETS="$bad\n" "$HELPER" detail secrets | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d["ok"] and "unrecognized" in d["error"], d' || fail "secret row accepted: $bad"
+done
+FAKE_SECRETS='no secrets\n' "$HELPER" detail secrets | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ok"] and d["data"]==[]'
 "$HELPER" action net-allow rku7 '*.example.com'
 "$HELPER" action net-join my-net rku7
 "$HELPER" action secret-rm EXAMPLE_KEY
@@ -395,5 +421,59 @@ if "$HELPER" action net-allow rku7 999.999.999.999; then fail "invalid IPv4 entr
 if "$HELPER" action secret-set EXAMPLE_KEY example.com; then fail "secret set must use terminal path"; fi
 [[ $(wc -l < "$LOG") == "$before" ]] || fail "invalid action reached CLI"
 ok
+
+# --- projects: listed in status, --project reaches every call, a missing one is reported ---
+: > "$LOG"
+out=$("$HELPER" status)
+python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["projects"]==[{"slug":"default","name":"Default"},{"slug":"client-work","name":"Client work"}] and d["project"]=="" and not d["projectMissing"], d' "$out" || fail "projects in status"
+out=$(FAKE_OLD_CLI=1 "$HELPER" status)
+python3 -I -c 'import json,sys; assert json.loads(sys.argv[1])["projects"]==[]' "$out" || fail "old CLI has no projects"
+out=$(ORBLE_PROJECT=client-work "$HELPER" status)
+python3 -I -c 'import json,sys; assert json.loads(sys.argv[1])["project"]=="client-work"' "$out" || fail "ORBLE_PROJECT not reported"
+: > "$LOG"
+out=$("$HELPER" --project client-work status)
+python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] and d["project"]=="client-work"' "$out" || fail "--project status"
+for call in 'ls --json' 'snapshots --json' 'account' 'keys' 'project list' '--help'; do
+  grep -Fxq -- "--project client-work $call" "$LOG" || { cat "$LOG"; fail "--project missing on: $call"; }
+done
+"$HELPER" --project client-work ports rku7 > /dev/null
+"$HELPER" --project client-work detail secrets > /dev/null
+"$HELPER" --project client-work action suspend rku7
+"$HELPER" --project client-work exit-node --lan rku7 > /dev/null
+for call in 'port rku7' 'secret ls' 'suspend rku7' 'exit-node --lan rku7'; do
+  grep -Fxq -- "--project client-work $call" "$LOG" || { cat "$LOG"; fail "--project missing on: $call"; }
+done
+out=$("$HELPER" --project nope status)
+python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); assert not d["ok"] and d["projectMissing"] and d["project"]=="nope" and len(d["projects"])==2, d' "$out" || fail "missing project"
+before=$(wc -l < "$LOG")
+for bad in 'Client' '-rf' '' 'a/b'; do
+  if "$HELPER" --project "$bad" status 2>/dev/null; then fail "bad project slug accepted: $bad"; fi
+done
+[[ $(wc -l < "$LOG") == "$before" ]] || fail "bad project slug reached CLI"
+# A project is made for the account, so project create never carries --project.
+: > "$LOG"; : > "$NOTES"
+"$HELPER" --project client-work action project-create 'Client work 2'
+[[ $(cat "$LOG") == 'project create Client work 2' ]] || { cat "$LOG"; fail "project create argv"; }
+grep -q "Project Client work 2 created" "$NOTES" || { cat "$NOTES"; fail "project create note"; }
+refuse action project-create '-x'
+refuse action project-create 'a$(id)'
+refuse action project-create "$(printf 'x%.0s' {1..41})"
+ok
+
+# --- secret-set: comma-separated hosts, Orble's default header and format, the project (needs a tty) ---
+if command -v script > /dev/null; then
+  : > "$LOG"
+  script -qec "'$HELPER' --project client-work secret-set NEW_KEY api.example.com,example.com '' '' scoped rku7 base1" /dev/null < /dev/null > /dev/null
+  script -qec "'$HELPER' secret-set NEW_KEY api.example.com X-Api-Key 'Key {}' all-intercept" /dev/null < /dev/null > /dev/null
+  [[ $(cat "$LOG") == $'--project client-work secret set NEW_KEY --host api.example.com --host example.com --box rku7 --box base1\nsecret set NEW_KEY --host api.example.com --header X-Api-Key --format Key {} --intercept' ]] || { cat "$LOG"; fail "secret-set argv"; }
+  : > "$LOG"
+  for args in "NEW_KEY a.com,a.com '' '' all" "NEW_KEY a.com,-x '' '' all" "NEW_KEY a.com 'X Y' '' all" "NEW_KEY a.com '' 'no braces' all" "NEW_KEY a.com '' '' scoped" "new_key a.com '' '' all"; do
+    script -qec "'$HELPER' secret-set $args" /dev/null < /dev/null > /dev/null || true
+  done
+  [[ ! -s $LOG ]] || { cat "$LOG"; fail "invalid secret-set reached the CLI"; }
+  ok
+else
+  echo "helper-test: script(1) missing, skipping the secret-set terminal test" >&2
+fi
 
 echo "helper-test: $pass groups passed"

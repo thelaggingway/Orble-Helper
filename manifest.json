@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "thelaggingway.orble-helper",
   "name": "Orble Helper",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "thelaggingway",
   "license": "MIT",
-  "description": "Orble sandboxes in the Omarchy bar: new boxes in three sizes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node, private networks, egress rules, secrets, SSH keys and credit, through the signed-in orble CLI.",
+  "description": "Orble sandboxes in the Omarchy bar: new boxes in three sizes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node, projects, private networks, egress rules, secrets, SSH keys and credit, through the signed-in orble CLI.",
   "kinds": [
     "bar-widget"
   ],
@@ -31,7 +31,8 @@
       "showCount": true,
       "showCredit": true,
       "lowCreditUSD": 1,
-      "demoMode": false
+      "demoMode": false,
+      "project": ""
     },
     "schema": [
       {
@@ -66,6 +67,13 @@
         "max": 100,
         "step": 1,
         "defaultValue": 1
+      },
+      {
+        "key": "project",
+        "type": "string",
+        "label": "Orble project",
+        "description": "The project slug the panel opens in (orble project list). Empty: ORBLE_PROJECT, else your default project. The PROJECT row in the panel switches until the shell restarts.",
+        "defaultValue": ""
       },
       {
         "key": "demoMode",

@@ -2,15 +2,19 @@
 
 An [Omarchy](https://omarchy.org/) bar plugin for [Orble](https://orble.tech), sandboxes for AI agents. It puts your boxes, snapshots, credit, SSH keys and the exit node in a panel on the bar, using the official [CLI](https://orble.tech/docs?tab=cli): new boxes, forks, snapshots and boxes made from them, shared ports, one-click SSH, suspend and resume, the desktop in your browser or a VNC viewer, the exit node with its LAN and fallback options, SSH keys, top-ups, sign-in and CLI updates. With Orble Pro, it also manages outbound rules, private box networks and secret assignments.
 
-It is a front end to the official `orble` CLI and uses the CLI's own sign-in. The plugin stores no token or password.
+It is a front end to the official `orble` CLI and uses the CLI's own sign-in (`orble login`, or an `ORBLE_API_KEY` in the shell's environment). The plugin stores no token or password.
 
 ![The Orble Helper panel, showing made-up demo data](preview.png)
 
-*The panel with **Demo data** on (made-up boxes, snapshots, keys and credit): one box expanded with its snapshot row and a shared port, and a snapshot offering the sizes for a new box.*
+*The panel with **Demo data** on (made-up boxes, snapshots, keys and credit): one box expanded with its ports, Boxes and Snapshots open, and the other sections collapsed to one line each.*
 
 ## What it does
 
 **Bar icon.** A server icon that lights up while any box is running, with the count beside it, and a globe while the exit node is on. It is highlighted when you're signed out or your credit is low. Left-click opens the panel and right-click refreshes.
+
+**Sections.** Every section has a header you click to open or close it. Boxes and Snapshots start open; Project, Credit, Private networks, Secrets, Exit node and SSH keys start closed, each showing a short summary (the current project, your balance, whether the exit node is on, how many keys). Credit keeps **Add credit** and the exit node keeps **Start/Stop** on its header line. Sections stay as you leave them until the shell restarts.
+
+**Projects.** Boxes, your own snapshots, private networks and secrets belong to an Orble project, and the panel shows one project at a time. The **PROJECT** row lists your projects (`orble project list`); pick one and everything in the panel, including new boxes, secrets and the exit node, works in it (`orble --project <slug> …`). **New** creates a project (`orble project create <name>`, asks first; the CLI can't delete projects). The panel opens in the `project` setting, else `ORBLE_PROJECT`, else your default project. A box's details show the snapshot it was made from, and gallery snapshots show what they are for.
 
 **Credit.** Your credit, account and box hostname pattern (`<box>.<account>.orble.tech`). **Add credit** offers $10, $25, $50 or $100; after you confirm, `orble topup <amount>` runs in a terminal, where you finish paying the way the CLI asks. The plugin never pays anything itself.
 
@@ -40,13 +44,13 @@ Click a box for its hostname, when it was last active, whether its desktop is on
 
 **Ports.** An expanded box also lists its shared ports (`orble port <box>`), each at its own HTTPS address, with buttons to open it, copy the address, make a public port private again, or stop sharing (`orble port <box> <port> --off`). Type a port and choose **Share** (`orble port <box> <port>`: only your signed-in Orble account can open it) or **Public** (`--public`: anyone with the address, asks first; Orble allows it only on accounts that have added credit). Ports load when you expand a box, since the CLI lists them one box at a time.
 
-**Snapshots.** A list of your snapshots, always shown under the boxes (`orble snapshots --json`): name, the box it was saved from, its size, disk and age. **+** offers the sizes a box made from it can have and runs `orble new --from <snapshot> -s <size>`. At the snapshot's own size the new box has its files and running programs; larger, its files only (the tooltip says which). Gallery snapshots can be used to create boxes. Rename and delete are available for your own snapshots. The trash button deletes a snapshot (`orble snapshot rm <snapshot> -y`, asks first). Like `new`, making a box from a snapshot is refused at zero credit. The section is hidden with a CLI from before snapshots; **Update CLI** fixes that.
+**Snapshots.** The current project's snapshots, then Orble's gallery snapshots (such as `code-interpreter` and `xfce`), which are the same in every project (`orble snapshots --json`): name, the box it was saved from, its size, disk and age. **+** offers the sizes a box made from it can have and runs `orble new --from <snapshot> -s <size>`. At the snapshot's own size the new box has its files and running programs; larger, its files only (the tooltip says which). Gallery snapshots can be used to create boxes. Rename and delete are available for your own snapshots. The trash button deletes a snapshot (`orble snapshot rm <snapshot> -y`, asks first). Like `new`, making a box from a snapshot is refused at zero credit. The section is hidden with a CLI from before snapshots; **Update CLI** fixes that.
 
 **Egress rules (Pro).** Open a box and choose **Egress rules**. Add or remove allow and deny rules for domains, wildcard domains, IPv4 addresses, or CIDRs. **Allowlist only** blocks everything else. **Clear rules and reopen** removes the policy. Rules carry over to forks and snapshots. Orble does not combine an exit node with egress rules.
 
 **Private networks (Pro).** Open **Private networks** to see each network, its members, and their internal hostnames and addresses. Create a network and pick boxes to join. Remove members or delete a network after reviewing who will be disconnected. Forks inherit membership and connecting to a suspended member can wake it.
 
-**Managed secrets (Pro).** Open **Secrets** to see names, destination hosts, and assigned boxes. Pick one or more boxes per secret or explicitly choose **All boxes**. Orble's own terminal prompt reads the value with echo disabled. Use **Replace value or scope** to submit a new value with the complete desired scope, then reopen the panel or choose **Refresh**. Verify the HTTP header and format when replacing a secret with custom settings. HTTPS interception is optional and installs the account CA in affected boxes. The panel only receives metadata.
+**Managed secrets (Pro).** Secrets belong to the current project. Open **Secrets** to see each secret's destination hosts, assigned boxes, and whether HTTPS interception is on. Give one or more hosts, comma-separated (the first is where `$NAME_URL` goes), and pick boxes or explicitly choose **All boxes**, which also covers boxes created later in the project. Inside a box, `$NAME` holds a placeholder that Orble swaps for the real value on the way out. Leave the HTTP header and format empty to use Orble's default for the host (it knows the Anthropic, OpenAI and GitHub APIs, among others), or set your own. Orble's own terminal prompt reads the value with echo disabled. **Replace value or scope** starts from the secret's current hosts, boxes and interception; Orble doesn't list a custom header or format, so enter those again. HTTPS interception is optional and installs the account CA in affected boxes. The panel only receives metadata.
 
 **Keep awake.** Orble suspends a box about a minute after its last SSH connection closes, and processes running in it (an agent in tmux, a cron job) freeze until something connects again. **Keep awake** pins the box awake on Orble's side (`orble keep-awake <box>`), so it keeps running while this machine sleeps or is off, and resumes it if it was suspended. A pinned box shows a coffee cup and bills while it runs. **Let it sleep** (`orble keep-awake <box> off`) lets it suspend when idle again. Suspending a pinned box from the panel still suspends it, and the pin stays. The button needs an Orble CLI from 2026-11-19 or later; **Update CLI** gets one.
 
@@ -63,7 +67,7 @@ Every background action sends a notification when it finishes, saying whether it
 ## Requirements
 
 - Omarchy with the Quickshell-based shell.
-- The [`orble` CLI](https://orble.tech/docs), signed in (`orble account`). The new management controls were verified with `bc07c8bf`. Use **Update CLI** to enable them on an older CLI.
+- The [`orble` CLI](https://orble.tech/docs), signed in (`orble account`). Projects and the current secret listing were verified with `4af3402c` (2026-11-21). Use **Update CLI** to enable them on an older CLI.
 - `python3`, `ssh-keygen`, `wl-copy` and `xdg-open`, which Omarchy ships. Optional: `tigervnc` or `remmina` for the VNC viewer button.
 
 ## Install
@@ -83,6 +87,7 @@ If you're signed out, the panel shows **Sign in to Orble**, which runs `orble lo
 | `showCount` | `true` | Show the number of running boxes next to the icon. |
 | `showCredit` | `true` | Show the credit card. |
 | `lowCreditUSD` | `1` | Below this the credit turns red and the icon is highlighted; `0` turns it off. |
+| `project` | `""` | The project slug the panel opens in (`orble project list`). Empty: `ORBLE_PROJECT`, else your default project. |
 | `demoMode` | `false` | Made-up boxes, keys and credit for screenshots. The CLI is never called and actions do nothing. |
 
 ```bash

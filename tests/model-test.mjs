@@ -6,7 +6,7 @@ import vm from "node:vm"
 
 const src = readFileSync(fileURLToPath(new URL("../Model.js", import.meta.url)), "utf8").replace(/^\.pragma library\s*$/m, "")
 const M = {}
-vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText, validPort, validSnapshotName, sizesFrom, snapshotLine, fromTooltip, portAccess })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
+vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText, validPort, validSnapshotName, sizesFrom, snapshotLine, fromTooltip, portAccess, validProject, validProjectName, activeProject, projectLabel, validHosts })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
 
 let n = 0
 const t = (name, fn) => { fn(); n++ }
@@ -145,5 +145,32 @@ t("snapshots", () => {
   assert.equal(M.parseStatus('{"ok":true}').snapshotsSupported, false)
 })
 
+t("projects", () => {
+  for (const ok of ["default", "client-work", "a1"]) assert.ok(M.validProject(ok), ok)
+  for (const bad of ["", "Default", "-rf", "a b", "a/b", "a".repeat(64), null]) assert.ok(!M.validProject(bad), String(bad))
+  assert.ok(M.validProjectName("Client work 2") && !M.validProjectName(" x") && !M.validProjectName("a$(id)") && !M.validProjectName("x".repeat(41)))
+  const list = [{ slug: "personal", name: "Personal" }, { slug: "default", name: "Default" }]
+  // Picked, then the helper's ORBLE_PROJECT, then "default" when listed, then the first listed.
+  assert.equal(M.activeProject("personal", { project: "other" }, list), "personal")
+  assert.equal(M.activeProject("", { project: "other" }, list), "other")
+  assert.equal(M.activeProject("", { project: "" }, list), "default")
+  assert.equal(M.activeProject("", null, [{ slug: "main", name: "Main" }]), "main")
+  assert.equal(M.activeProject("", null, []), "")
+  assert.equal(M.projectLabel("personal", list), "Personal")
+  assert.equal(M.projectLabel("gone", list), "gone")
+  assert.equal(M.projectLabel("", []), "Default")
+  const st = M.parseStatus('{"ok":true}')
+  assert.deepEqual([st.projects.length, st.project], [0, ""])
+  assert.match(M.confirmText("secret-rm", "GH_TOKEN", "Personal"), /GH_TOKEN from the Personal project/)
+  assert.match(M.confirmText("project-create", "Client"), /Create the Orble project Client\?.*no command to delete/)
+})
+
+t("secret hosts, gallery and snapshot sources", () => {
+  for (const ok of ["api.example.com", "api.github.com,github.com,uploads.github.com"]) assert.ok(M.validHosts(ok), ok)
+  for (const bad of ["", "example", "a.com,", ",a.com", "a.com,a.com", "a.com b.com", "-x.com", "a.com;id"]) assert.ok(!M.validHosts(bad), bad)
+  assert.equal(M.snapshotLine({ gallery: true, about: "for E2B's desktop SDK", size: "s" }), "for E2B's desktop SDK · S · 2/4")
+  assert.equal(M.snapshotLine({ gallery: true, size: "s" }), "Orble gallery · S · 2/4")
+  assert.equal(M.detailLine({ fromSnapshot: "amp-orb-base", diskGiB: 64 }, false), "from snapshot amp-orb-base · 64 GB disk")
+})
 
 console.log(`model-test: ${n} groups passed`)

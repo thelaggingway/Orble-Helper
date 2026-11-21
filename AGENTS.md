@@ -23,7 +23,7 @@ bin/orble-panel status | jq .      # read-only, safe against the real account
 omarchy plugin validate .
 ```
 
-To check the expanded box, temporarily set the `expandedBox` default in `Panel.qml`, restart the shell, screenshot (`grim -o <output>`), and put them back.
+Sections open and close through the shared `SectionHeader` component (chevrons from `Model.icons`: the old `▸`/`▾` text arrows didn't render in the bar font). Boxes and snapshots start open; `projectsOpen`, `creditOpen`, `networksOpen`, `secretsOpen`, `exitOpen` and `keysOpen` start `false`. Networks and secrets load when their section opens. To check the expanded box, temporarily set the `expandedBox` default in `Panel.qml`, restart the shell, screenshot (`grim -o <output>`), and put them back.
 
 **Don't run actions against a real account** unless the user asks; `status` is the only read-only command. `helper-test.sh` covers the argv of every action against a fake CLI.
 
@@ -33,7 +33,7 @@ To check the expanded box, temporarily set the `expandedBox` default in `Panel.q
 2. **Argv only**: arrays in QML, `subprocess` lists in Python, never `sh -c` or `shell=True`.
 3. **Validate before the CLI runs**: `NAME_RE` (same in Python and `Model.js`; snapshot names too), `check_port` 1–65535, `FP_RE`, `KEYFILE_RE` + realpath inside `~/.ssh`, `check_dollars` 10–500. The CLI doesn't validate (`orble rm --help` asks to delete a box named `--help`).
 4. **Whitelisted verbs**: `ONE_ARG` (including `keep-awake`, `keep-awake-off`) or an explicit branch in `action()` (`new [s|m|l]`, `new-from <snapshot> [s|m|l]`, `fork <box> [1-10]`, `snapshot <box> [name]`, `snapshot-rm <snapshot>`, `port|port-public|port-off <box> <port>`, `keys-*`, `update`). Unknown verbs exit before calling the CLI.
-5. **Never start a sign-in in the background.** `signed_in()` checks only that `config.json` has a `token` (never reads it out; `source-test.sh` checks the word appears once). `cli()` kills the CLI as soon as it prints a sign-in marker.
+5. **Never start a sign-in in the background.** `signed_in()` checks only that `ORBLE_API_KEY` is set or `config.json` has a `token` (never reads either out; `source-test.sh` checks the word `"token"` appears once). `cli()` kills the CLI as soon as it prints a sign-in marker.
 6. **Never reach a prompt in the background.** stdin is `/dev/null`; `rm` and `snapshot rm` get `-y`; `keys add` gets a path; `new`, `new-from` and `fork` are refused when `account` shows credit ≤ 0 (the CLI would offer a top-up).
 7. **Money and exposure are visible and confirmed.** `fork` (a new billed box), `snapshot-rm`, `port-public` (open to anyone) and `topup` are in `confirmVerbs`; `topup` and runs only via `openTerminal`, never as a background action.
 8. **The exit node stops like Ctrl-C**: `exitProc.signal(2)`, with a 10 s fallback. The helper `execve`s the CLI so the signal reaches it directly.
@@ -44,6 +44,14 @@ To check the expanded box, temporarily set the `expandedBox` default in `Panel.q
 13. **No native text inputs** (`TextField`, `TextInput`, `TextEdit`, `TextArea`): a writable one fetches the clipboard on every clipboard change with no size limit (marketplace review on #14930). Use `KeyField`, which takes typed keys only (filtered by its `allowed` regex) and has no paste. `source-test.sh` enforces this.
 
 ## Current CLI additions
+
+Verified live on 2026-11-21 against the CLI from orble.tech/dl that day (sha256 `4af3402ce7f2…`), on the account and on an InstaBox Omarchy machine:
+
+- **Projects.** `project list` prints `<slug>  <Name>` per line (`default  Default` first). `project create <name>` exists (not run live: the CLI has no delete). The global `--project <slug>` must come before the command (`ls --project x` prints help); `ORBLE_PROJECT` does the same. Boxes, private snapshots, `net`, `port` and `secret` are per project: `--project personal port k7kq` says `orble: no such box`. `keys`, `account` and gallery snapshots are account-wide. An unknown project: `orble: Project not found.` exit 1, but `project list` and `--help` still work, so the helper still returns `projects` with `projectMissing: true`. The helper takes `--project` before its own subcommand and passes it to every CLI call except `project create`.
+- **`ls --json`** adds `project` and, for boxes made from a snapshot, `snapshot` (shown as `fromSnapshot`). `snapshots --json` gallery entries add `about`.
+- **Secrets.** `secret ls` rows: `NAME  host1,host2  <scope>[  intercept]`, scope `all boxes in project` or stable box names joined by `, ` (an aliased box shows its `name`); empty: `no secrets`. `secret set NAME --host h [--host h2…] [--header H --format F] [--box b…] [--intercept]`: `--host` repeats (the first is the `$NAME_URL` gateway's), header and format default per host. It reads the value at a prompt or from stdin; with neither it fails `orble: enter the secret's value`. It prints `✓ saved NAME` and `in boxes: NAME=orbph_…, NAME_URL` (a placeholder; keep it out of plugin output). `secret rm NAME` takes no `-y` (it prints help) and doesn't prompt; a missing name: `orble: no secret named X`, exit 1. A `--box` outside the project: `orble: no box named k7kq`.
+- **Sign-in.** The CLI uses `ORBLE_API_KEY` when set, with no `config.json`; an API key also works as `config.json`'s `token`. `signed_in()` accepts either.
+- Also new, not used by the panel: in-box hooks (`~/.config/orble/on-resume.d/`), `snapshot build --ready/--start` and a hidden account-name command (`/v1/account/slug`).
 
 Verified live on 2026-11-19 against the CLI downloaded from orble.tech/dl that day (sha256 `17db9a97811f…`). It adds `keep-awake <box> [off]`. `keep-awake <box>` prints `<name>  ● running, kept awake` and resumes a suspended box. `off` prints `<name>  ● running, suspends when idle`. Both are idempotent and exit 0. `ls --json` gives `"keep_awake": true` while pinned and `null` otherwise. An explicit `suspend` still suspends a pinned box, and the pin is kept (`state: suspended, keep_awake: true`). `keep-awake <box> bogus` prints help and exits 2, and `keep-awake --help` reads `--help` as a box name (`orble: no such box`). The previous CLI (`6c3c5f0e…`) printed its help with exit 0 for `keep-awake`. `account` now has a `plan` line (`Pro, ends …`). `snapshot build [-f Dockerfile] [name] [--start cmd]` exists in both builds. The panel leaves it to a terminal.
 
