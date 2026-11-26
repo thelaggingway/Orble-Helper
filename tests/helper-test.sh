@@ -62,7 +62,7 @@ case "$*" in
   snapshot\ rm\ *) echo "✓ deleted snapshot ${3}" ;;
   new\ --from\ *) echo "✓ q2w3 ready in 0.30s" ;;
   port\ nvbg) printf '%s\n' '8080   signin  https://8080-yj3vcxk7lezdtgpc.orble.dev' \
-    '3000   public  https://3000-yj3vcxk7lezdtgpc.orble.dev' '9999   signin  https://evil.example.com' '99999  signin  https://x.orble.dev' ;;
+    '3000   public  https://3000-yj3vcxk7lezdtgpc.orble.dev' '4000   token   https://4000-yj3vcxk7lezdtgpc.orble.dev' '9999   signin  https://evil.example.com' '99999  signin  https://x.orble.dev' ;;
   port\ rku7) echo "no shared ports" ;;
   port\ nvbg\ 8081\ --public) echo "orble: public ports are for accounts that have added credit: https://orble.tech/dashboard" >&2; exit 1 ;;
   port\ nvbg\ *\ --off) echo "✓ nvbg:${3} unshared" ;;
@@ -166,7 +166,8 @@ import json, sys
 d = json.loads(sys.argv[1])
 assert d["ok"] and d["box"] == "nvbg"
 assert d["ports"] == [{"port": 8080, "access": "signin", "url": "https://8080-yj3vcxk7lezdtgpc.orble.dev"},
-                      {"port": 3000, "access": "public", "url": "https://3000-yj3vcxk7lezdtgpc.orble.dev"}], d
+                      {"port": 3000, "access": "public", "url": "https://3000-yj3vcxk7lezdtgpc.orble.dev"},
+                      {"port": 4000, "access": "token", "url": "https://4000-yj3vcxk7lezdtgpc.orble.dev"}], d
 EOF
 [[ $("$HELPER" ports rku7) == '{"ok": true, "error": "", "box": "rku7", "ports": []}' ]] || fail "no ports"
 ok
@@ -350,8 +351,10 @@ ok
 : > "$LOG"
 "$HELPER" ssh rku7 < /dev/null > /dev/null
 "$HELPER" topup 25 < /dev/null > /dev/null
+"$HELPER" port-token nvbg 3000 < /dev/null > /dev/null
+"$HELPER" port-new-token nvbg 3000 < /dev/null > /dev/null
 "$HELPER" login < /dev/null > /dev/null
-[[ $(cat "$LOG") == $'ssh rku7\ntopup 25\nlogin' ]] || { cat "$LOG"; fail "terminal argv"; }
+[[ $(cat "$LOG") == $'ssh rku7\ntopup 25\nport nvbg 3000 --token\nport nvbg 3000 --new-token\nlogin' ]] || { cat "$LOG"; fail "terminal argv"; }
 ok
 
 # --- exit-node becomes orble exit-node with the validated flags ---
@@ -405,11 +408,21 @@ FAKE_SECRETS='no secrets\n' "$HELPER" detail secrets | python3 -c 'import json,s
 "$HELPER" action net-join my-net rku7
 "$HELPER" action secret-rm EXAMPLE_KEY
 "$HELPER" action new-named s my-box
+"$HELPER" action new-named micro tiny-box
+"$HELPER" action start rku7
 "$HELPER" action resize rku7 m
+"$HELPER" action resize rku7 s
 "$HELPER" action port-private nvbg 3000
-for call in 'net allow rku7 *.example.com' 'net join my-net rku7' 'secret rm EXAMPLE_KEY' 'new -s s --name my-box' 'resize rku7 m' 'port nvbg 3000 --private'; do
+"$HELPER" action secret-copy EXAMPLE_KEY client-work
+"$HELPER" action logout
+for call in 'net allow rku7 *.example.com' 'net join my-net rku7' 'secret rm EXAMPLE_KEY' 'new -s s --name my-box' 'new -s micro --name tiny-box' 'start rku7' 'resize rku7 m' 'resize rku7 s' 'port nvbg 3000 --private' 'secret copy EXAMPLE_KEY --to client-work' 'logout'; do
   grep -Fxq "$call" "$LOG" || fail "$call missing"
 done
+refuse action secret-copy EXAMPLE_KEY Client
+refuse action secret-copy bad_name client-work
+refuse action resize rku7 micro
+refuse port-token nvbg 0
+refuse port-new-token --help 3000
 for kind in old free malformed; do
   FAKE_DETAILS="$kind" "$HELPER" detail networks |
     python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d["ok"] and sys.argv[1] in d["error"],d'       "$(case $kind in old) echo 'Update CLI';; free) echo 'Orble Pro';; malformed) echo 'unrecognized';; esac)"

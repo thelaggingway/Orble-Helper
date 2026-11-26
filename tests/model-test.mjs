@@ -6,7 +6,7 @@ import vm from "node:vm"
 
 const src = readFileSync(fileURLToPath(new URL("../Model.js", import.meta.url)), "utf8").replace(/^\.pragma library\s*$/m, "")
 const M = {}
-vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText, validPort, validSnapshotName, sizesFrom, snapshotLine, fromTooltip, portAccess, validProject, validProjectName, activeProject, projectLabel, validHosts })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
+vm.runInNewContext(src + "\n;Object.assign(M, { glyph, icons, validName, validFingerprint, parseStatus, isRunning, isStopped, runningCount, stateLabel, stateTone, hasDesktop, size, money, subline, detailLine, sshCommand, shortFingerprint, headline, tooltip, creditLow, topupOptions, sizeOptions, sizeLabel, sizeOption, createLabel, sizeTooltip, confirmText, confirmButton, exitNodeArgs, toggled, cleanLine, exitSummary, ago, progressText, validPort, validSnapshotName, sizesFrom, snapshotLine, fromTooltip, portAccess, validProject, validProjectName, activeProject, projectLabel, validHosts })", { M, Date, JSON, Math, String, Number, Object, Array, isNaN })
 
 let n = 0
 const t = (name, fn) => { fn(); n++ }
@@ -37,6 +37,7 @@ t("states", () => {
   assert.equal(M.stateTone({ state: "suspending" }), "busy")
   assert.equal(M.stateTone({ state: "failed" }), "bad")
   assert.equal(M.stateTone({ state: "suspended" }), "off")
+  assert.ok(M.isStopped({ state: "stopped" }) && !M.isStopped({ state: "suspended" }))
   assert.ok(M.hasDesktop({ flags: ["desktop"] }))
   assert.ok(!M.hasDesktop({ flags: [] }) && !M.hasDesktop({}) && !M.hasDesktop({ flags: "desktop" }))
   // QML hands stored arrays back as array-like list wrappers, not real Arrays.
@@ -88,9 +89,11 @@ t("confirm texts", () => {
   assert.match(M.confirmText("topup", "$25"), /\$25.*terminal/)
   assert.match(M.confirmText("fork", "rku7"), /Fork rku7.*billed/)
   assert.equal(M.confirmButton("fork"), "Fork")
-  assert.equal(M.sizeOptions.map(o => o.value).join(","), "s,m,l")
+  assert.equal(M.sizeOptions.map(o => o.value).join(","), "micro,s,m,l")
+  assert.equal(M.sizeLabel("micro"), "μ · 1/2")
   assert.equal(M.sizeLabel("m"), "M · 4/8")
   assert.equal(M.sizeLabel("xl"), "")
+  assert.equal(M.createLabel("micro"), "Create Micro box")
   assert.equal(M.createLabel("m"), "Create M box")
   assert.equal(M.createLabel("xl"), "Create")
   assert.match(M.sizeTooltip("l"), /-s l: 8 vCPU, 16 GiB.*\$0\.06\/h/)
@@ -98,7 +101,11 @@ t("confirm texts", () => {
   assert.match(M.detailLine({ forkedFrom: "base1", diskGiB: 64, flags: [] }, false), /^fork of base1 · 64 GB disk/)
   assert.equal(M.confirmButton("rm"), "Delete")
   assert.equal(M.confirmButton("topup"), "Continue")
-  for (const v of ["suspend", "resume", "rm", "vnc", "desktop-off", "new", "keys-add", "keys-rm", "update", "fork"]) assert.ok(M.progressText[v], v)
+  assert.match(M.confirmText("secret-copy", "GH_TOKEN", "Client"), /Copy GH_TOKEN.*to project Client/)
+  assert.equal(M.confirmButton("secret-copy"), "Copy")
+  assert.match(M.confirmText("logout", "Orble"), /Sign the Orble CLI out/)
+  assert.equal(M.confirmButton("logout"), "Sign out")
+  for (const v of ["suspend", "resume", "start", "rm", "vnc", "desktop-off", "new", "keys-add", "keys-rm", "update", "logout", "fork", "secret-copy"]) assert.ok(M.progressText[v], v)
 })
 
 t("exit node", () => {
@@ -122,9 +129,14 @@ t("ports", () => {
   for (const ok of ["1", "80", "8080", "65535", " 3000 "]) assert.ok(M.validPort(ok), ok)
   for (const bad of ["", "0", "65536", "-1", "80a", "8.0", "--off", null]) assert.ok(!M.validPort(bad), String(bad))
   assert.equal(M.portAccess({ access: "public" }), "anyone with the address")
+  assert.equal(M.portAccess({ access: "token" }), "anyone with the preview token")
   assert.equal(M.portAccess({ access: "signin" }), "your Orble account only")
   assert.match(M.confirmText("port-public", "nvbg:8080"), /nvbg:8080.*Anyone/)
   assert.equal(M.confirmButton("port-public"), "Share")
+  assert.match(M.confirmText("port-token", "nvbg:3000"), /preview token/)
+  assert.equal(M.confirmButton("port-token"), "Share")
+  assert.match(M.confirmText("port-new-token", "nvbg:3000"), /old token stops working/)
+  assert.equal(M.confirmButton("port-new-token"), "Replace")
 })
 
 t("snapshots", () => {
@@ -135,6 +147,7 @@ t("snapshots", () => {
   assert.equal(M.snapshotLine({ ...sn, state: "saving" }), "from nvbg · M · 4/8 · 409 MB · now · saving")
   assert.deepEqual(Array.from(M.sizesFrom(sn), o => o.value), ["m", "l"])
   assert.deepEqual(Array.from(M.sizesFrom({ vcpus: 2 }), o => o.value), ["s", "m", "l"])
+  assert.deepEqual(Array.from(M.sizesFrom({ vcpus: 1 }), o => o.value), ["micro", "s", "m", "l"])
   assert.match(M.fromTooltip(sn, "m"), /--from plugin-test -s m: its files and running programs/)
   assert.match(M.fromTooltip(sn, "l"), /files only/)
   assert.match(M.confirmText("snapshot-rm", "plugin-test"), /plugin-test.*gone for good/)

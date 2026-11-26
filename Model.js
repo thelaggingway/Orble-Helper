@@ -98,6 +98,7 @@ function parseStatus(text) {
 }
 
 function isRunning(b) { return b && b.state === "running" }
+function isStopped(b) { return b && b.state === "stopped" }
 
 function runningCount(status) {
   if (!status) return 0
@@ -199,9 +200,10 @@ function creditLow(account, threshold) {
   return account.creditUSD < (Number(threshold) || 0)
 }
 
-// orble new -s: s 2 vCPU 4 GiB (the CLI's default), m 4/8, l 8/16. Prices from
-// orble.tech/pricing (2026-11-16): per second while running, nothing while suspended.
+// orble new -s: micro 1 vCPU 2 GiB, s 2 vCPU 4 GiB (the CLI's default), m 4/8, l 8/16. Prices from
+// orble.tech/pricing (2026-11-26): per second while running, nothing while suspended.
 var sizeOptions = [
+  { value: "micro", label: "μ · 1/2", hourUSD: 0.0075 },
   { value: "s", label: "S · 2/4", hourUSD: 0.015 },
   { value: "m", label: "M · 4/8", hourUSD: 0.03 },
   { value: "l", label: "L · 8/16", hourUSD: 0.06 }
@@ -215,7 +217,7 @@ function sizeOption(v) {
 // "Create M box" for the button; the tooltip has the price.
 function createLabel(v) {
   var o = sizeOption(v)
-  return o ? "Create " + o.value.toUpperCase() + " box" : "Create"
+  return o ? "Create " + (o.value === "micro" ? "Micro" : o.value.toUpperCase()) + " box" : "Create"
 }
 
 function sizeTooltip(v) {
@@ -257,7 +259,9 @@ function fromTooltip(snap, v) {
 }
 
 function portAccess(p) {
-  return p && p.access === "public" ? "anyone with the address" : "your Orble account only"
+  if (p && p.access === "public") return "anyone with the address"
+  if (p && p.access === "token") return "anyone with the preview token"
+  return "your Orble account only"
 }
 
 function sizeLabel(v) {
@@ -284,6 +288,7 @@ function confirmText(verb, target, extra) {
   if (verb === "net-delete") return "Delete network " + target + "?" + (extra ? " This disconnects " + extra + "." : "")
   if (verb === "net-leave") return "Remove " + extra + " from " + target + "?"
   if (verb === "secret-rm") return "Remove " + target + " from the " + (extra || "Default") + " project? Boxes there stop getting it."
+  if (verb === "secret-copy") return "Copy " + target + " (with its value and settings) to project " + extra + "?"
   if (verb === "project-create") return "Create the Orble project " + target + "? The CLI has no command to delete a project."
   if (verb === "secret-set") return "Open the Orble prompt for " + target + "?" + extra
 
@@ -293,6 +298,9 @@ function confirmText(verb, target, extra) {
   case "fork": return "Fork " + target + " into a new box? It carries on from " + target + ", running programs included, and is billed like any box."
   case "snapshot-rm": return "Delete snapshot " + target + "? Boxes made from it keep running; the snapshot itself is gone for good."
   case "port-public": return "Share port " + target + " publicly? Anyone with the address can reach it, no sign-in needed."
+  case "port-token": return "Share port " + target + " with a preview token? Anyone with the address and token can reach it. The token prints in a terminal."
+  case "port-new-token": return "Replace the preview token for " + target + "? The old token stops working at once."
+  case "logout": return "Sign the Orble CLI out of this machine?"
   case "topup": return "Add " + target + " of Orble credit? orble topup opens in a terminal; follow it there to pay."
   default: return verb + " " + target + "?"
   }
@@ -304,7 +312,10 @@ function confirmButton(verb) {
   if (verb === "topup") return "Continue"
   if (verb === "fork") return "Fork"
   if (verb === "snapshot-rm") return "Delete"
-  if (verb === "port-public") return "Share"
+  if (verb === "port-public" || verb === "port-token") return "Share"
+  if (verb === "port-new-token") return "Replace"
+  if (verb === "secret-copy") return "Copy"
+  if (verb === "logout") return "Sign out"
   if (verb === "project-create") return "Create"
   return "Confirm"
 }
@@ -351,10 +362,10 @@ function ago(nowSec, thenSec) {
 }
 
 var progressText = {
-  "suspend": "Suspending", "resume": "Resuming", "rm": "Deleting", "vnc": "Opening desktop",
+  "suspend": "Suspending", "resume": "Resuming", "start": "Starting", "rm": "Deleting", "vnc": "Opening desktop",
   "desktop-off": "Turning desktop off", "new": "Creating", "keys-add": "Adding", "keys-rm": "Removing",
-  "update": "Updating", "fork": "Forking", "snapshot": "Saving snapshot", "snapshot-rm": "Deleting",
+  "update": "Updating", "logout": "Signing out", "fork": "Forking", "snapshot": "Saving snapshot", "snapshot-rm": "Deleting",
   "new-named": "Creating", "resize": "Resizing", "rename": "Renaming", "snapshot-rename": "Renaming",
   "port-private": "Making private", "new-from": "Creating", "port": "Sharing", "port-public": "Sharing", "port-off": "Unsharing",
-  "keep-awake": "Pinning awake", "keep-awake-off": "Unpinning", "project-create": "Creating project"
+  "keep-awake": "Pinning awake", "keep-awake-off": "Unpinning", "project-create": "Creating project", "secret-copy": "Copying"
 }

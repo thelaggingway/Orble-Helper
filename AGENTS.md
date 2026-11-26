@@ -45,6 +45,15 @@ Sections open and close through the shared `SectionHeader` component (chevrons f
 
 ## Current CLI additions
 
+Verified live on 2026-11-26 against the CLI from orble.tech/dl that day (sha256 `10c4434ffa8c…`):
+
+- **Micro size (`micro` / `μ`).** `1 vCPU`, `2 GiB` RAM, `64 GiB` disk, `$0.0075/h` while running. `new -s micro` creates one; `resize` targets `s|m|l`.
+- **Stopped boxes (`start <box>`).** A box powered off by its own software (`poweroff`, `halt`, `shutdown -h`) is `stopped`; SSH does not wake it, and `orble start <box>` boots it from disk.
+- **Token shared ports.** `orble port <box> <port> --token` and `--new-token` print a preview token to stdout, so the helper runs both in a visible terminal (`port-token`, `port-new-token`) rather than a background action. `port <box>` lists `token` as the access column.
+- **Secret copy (`secret copy <NAME> --to <project,...>`).** Copies a secret's value and settings to other projects without re-entering the value.
+- **Sign out (`logout`).** `orble logout` signs the CLI out (`✓ Signed out`). Note: `orble logout --help` also executes `logout` immediately without checking for `--help`.
+- **Project scoping.** `orble ls --json` and `orble snapshots --json` return items across all projects when `--project` is omitted; `Panel.qml` resolves `activeProject` (e.g. `default`) on initial status and passes `--project` on subsequent calls so the panel stays scoped to one project.
+
 Verified live on 2026-11-21 against the CLI from orble.tech/dl that day (sha256 `4af3402ce7f2…`), on the account and on an InstaBox Omarchy machine:
 
 - **Projects.** `project list` prints `<slug>  <Name>` per line (`default  Default` first). `project create <name>` exists (not run live: the CLI has no delete). The global `--project <slug>` must come before the command (`ls --project x` prints help); `ORBLE_PROJECT` does the same. Boxes, private snapshots, `net`, `port` and `secret` are per project: `--project personal port k7kq` says `orble: no such box`. `keys`, `account` and gallery snapshots are account-wide. An unknown project: `orble: Project not found.` exit 1, but `project list` and `--help` still work, so the helper still returns `projects` with `projectMissing: true`. The helper takes `--project` before its own subcommand and passes it to every CLI call except `project create`.

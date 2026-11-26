@@ -253,7 +253,16 @@ Panel {
     root.status = next
     root.lastRefreshAt = Date.now() / 1000
     root.now = root.lastRefreshAt
-    if (next.projects.length) root.projects = next.projects
+    if (next.projects.length) {
+      root.projects = next.projects
+      if (!root.project) {
+        var picked = Model.activeProject("", next, next.projects)
+        if (picked) {
+          root.project = picked
+          Qt.callLater(function() { root.refresh(); root.reloadOpenDetails() })
+        }
+      }
+    }
     // Drop exit-node picks for boxes that are gone.
     var names = next.boxes.map(function(b) { return b.name })
     var kept = root.exitBoxes.filter(function(n) { return names.indexOf(n) >= 0 })
@@ -380,7 +389,7 @@ Panel {
     wakeRefresh.restart()
   }
 
-  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public", "resize", "net-block", "net-open", "net-allow", "net-deny", "net-rm", "net-delete", "net-leave", "secret-rm", "secret-set", "project-create"]
+  readonly property var confirmVerbs: ["rm", "keys-rm", "topup", "fork", "snapshot-rm", "port-public", "port-token", "port-new-token", "resize", "net-block", "net-open", "net-allow", "net-deny", "net-rm", "net-delete", "net-leave", "secret-rm", "secret-copy", "secret-set", "project-create", "logout"]
 
   // Destructive or paying verbs go through the confirm dialog first.
   function request(verb, target, args, extra) {
@@ -403,12 +412,16 @@ Panel {
       openTerminal(["topup"].concat(c.args))
     } else if (c.verb === "port-public") {
       runAction(c.verb, c.args, "port:" + c.args[0] + ":" + c.args[1])
+    } else if (c.verb === "port-token" || c.verb === "port-new-token") {
+      openTerminal([c.verb].concat(c.args))
     } else if (c.verb === "secret-set") {
       openTerminal(c.args)
     } else if (c.verb === "net-delete" || c.verb === "net-leave") {
       runAction(c.verb, c.args, "networks")
-    } else if (c.verb === "secret-rm") {
+    } else if (c.verb === "secret-rm" || c.verb === "secret-copy") {
       runAction(c.verb, c.args, "secrets")
+    } else if (c.verb === "logout") {
+      runAction(c.verb, c.args, "logout")
     } else if (["net-block", "net-open", "net-allow", "net-deny", "net-rm"].indexOf(c.verb) >= 0) {
       runAction(c.verb, c.args, "egress:" + c.args[0])
     } else if (c.verb === "snapshot-rm") {
@@ -1409,6 +1422,7 @@ Panel {
     property string format: ""
     property bool allBoxes: false
     property bool intercept: false
+    property string copying: ""
     property var selected: []
     readonly property var missingBoxes: selected.filter(function(name) {
       return !root.boxes.some(function(box) { return box.name === name })
@@ -1459,7 +1473,31 @@ Panel {
         Row {
           spacing: Style.space(6)
           ActionButton { text: "Replace value or scope"; enabled: !secrets.busy; onClicked: secrets.edit(savedSecret.modelData) }
+          ActionButton {
+            visible: root.projects.length > 1
+            text: "Copy to project"
+            active: secrets.copying === savedSecret.modelData.name
+            enabled: !secrets.busy
+            onClicked: secrets.copying = active ? "" : savedSecret.modelData.name
+          }
           ActionButton { text: "Remove"; enabled: !secrets.busy; onClicked: root.request("secret-rm", savedSecret.modelData.name, null, root.projectName) }
+        }
+        Flow {
+          visible: secrets.copying === savedSecret.modelData.name && root.projects.length > 1
+          width: secrets.width
+          spacing: Style.space(5)
+          Repeater {
+            model: root.projects.filter(function(p) { return p.slug !== root.activeProject })
+            delegate: ActionButton {
+              required property var modelData
+              text: modelData.name || modelData.slug
+              enabled: !secrets.busy
+              onClicked: {
+                secrets.copying = ""
+                root.request("secret-copy", savedSecret.modelData.name, [savedSecret.modelData.name, modelData.slug], modelData.name || modelData.slug)
+              }
+            }
+          }
         }
       }
     }
@@ -1602,12 +1640,25 @@ Panel {
       }
     }
 
-    PlainText {
+    Row {
       visible: root.creditOpen
       width: parent.width
-      text: cc.a ? [cc.a.email, cc.a.domain ? "<box>." + cc.a.domain + ".orble.tech" : ""].filter(function(p) { return p }).join(" · ") : ""
-      color: root.lowCredit ? root.urgent : root.muted
-      font.pixelSize: Style.font.caption
+      spacing: Style.space(8)
+      PlainText {
+        width: parent.width - logoutButton.implicitWidth - parent.spacing
+        anchors.verticalCenter: parent.verticalCenter
+        text: cc.a ? [cc.a.email, cc.a.domain ? "<box>." + cc.a.domain + ".orble.tech" : ""].filter(function(p) { return p }).join(" · ") : ""
+        color: root.lowCredit ? root.urgent : root.muted
+        font.pixelSize: Style.font.caption
+      }
+      ActionButton {
+        id: logoutButton
+        anchors.verticalCenter: parent.verticalCenter
+        text: root.pending["logout"] ? "Signing out…" : "Sign out"
+        tooltipText: "orble logout"
+        enabled: !root.pending["logout"]
+        onClicked: root.request("logout", "Orble", [])
+      }
     }
 
     PlainText {
@@ -1773,6 +1824,7 @@ Panel {
     readonly property string busyVerb: root.pending[b.name] || ""
     readonly property bool isBusy: busyVerb !== "" || Model.stateTone(b) === "busy"
     readonly property bool isRunning: Model.isRunning(b)
+    readonly property bool isStopped: Model.isStopped(b)
     width: column.width
     spacing: Style.space(6)
 
@@ -1838,12 +1890,12 @@ Panel {
           anchors.rightMargin: Style.space(2)
           anchors.verticalCenter: parent.verticalCenter
           iconText: brow.isRunning ? Model.icons.pause : Model.icons.play
-          tooltipText: brow.isRunning ? "Suspend (processes kept; SSH resumes it)" : "Resume"
+          tooltipText: brow.isRunning ? "Suspend (processes kept; SSH resumes it)" : brow.isStopped ? "Start from disk (orble start)" : "Resume"
           foreground: root.foreground
           fontFamily: root.fontFamily
           enabled: !brow.isBusy
           opacity: enabled ? 1 : 0.35
-          onClicked: root.request(brow.isRunning ? "suspend" : "resume", brow.b.name)
+          onClicked: root.request(brow.isRunning ? "suspend" : brow.isStopped ? "start" : "resume", brow.b.name)
         }
 
         PanelActionButton {
@@ -1851,11 +1903,11 @@ Panel {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           iconText: Model.icons.ssh
-          tooltipText: brow.isRunning ? "SSH into " + brow.b.name : "Resume and SSH into " + brow.b.name
+          tooltipText: brow.isRunning ? "SSH into " + brow.b.name : brow.isStopped ? "Start the box first (stopped boxes don't wake on SSH)" : "Resume and SSH into " + brow.b.name
           foreground: root.foreground
           hoverColor: root.accent
           fontFamily: root.fontFamily
-          enabled: brow.busyVerb === "" || brow.busyVerb === "resume"
+          enabled: !brow.isStopped && (brow.busyVerb === "" || brow.busyVerb === "resume")
           opacity: enabled ? 1 : 0.35
           onClicked: root.ssh(brow.b.name)
         }
@@ -1948,7 +2000,7 @@ Panel {
         enabled: !brow.isBusy
         ActionButton { visible: root.modernCli; text: "Rename"; active: brow.renameOpen; onClicked: root.renameBox = brow.renameOpen ? "" : brow.b.name }
         Repeater {
-          model: !root.modernCli ? [] : brow.b.size === "s" ? ["m", "l"] : brow.b.size === "m" ? ["l"] : []
+          model: !root.modernCli ? [] : brow.b.size === "micro" ? ["s", "m", "l"] : brow.b.size === "s" ? ["m", "l"] : brow.b.size === "m" ? ["l"] : []
           delegate: ActionButton {
             required property string modelData
             text: "Resize to " + modelData.toUpperCase()
@@ -2062,6 +2114,21 @@ Panel {
 
         ActionButton {
           anchors.verticalCenter: parent.verticalCenter
+          iconText: Model.icons.key
+          text: "Token"
+          enabled: Model.validPort(root.portInput)
+          opacity: enabled ? 1 : 0.4
+          tooltipText: "orble port --token: share with a preview token (printed in a terminal)"
+          onClicked: {
+            var p = String(root.portInput || "").trim()
+            if (!Model.validPort(p)) return
+            root.portInput = ""
+            root.request("port-token", brow.b.name + ":" + p, [brow.b.name, p])
+          }
+        }
+
+        ActionButton {
+          anchors.verticalCenter: parent.verticalCenter
           iconText: Model.icons.earth
           text: "Public"
           enabled: Model.validPort(root.portInput)
@@ -2093,7 +2160,7 @@ Panel {
 
       PlainText {
         width: parent.width
-        text: prow.p.port + "  " + (prow.p.access === "public" ? Model.icons.earth : Model.icons.lock)
+        text: prow.p.port + "  " + (prow.p.access === "public" ? Model.icons.earth : prow.p.access === "token" ? Model.icons.key : Model.icons.lock)
         font.pixelSize: Style.font.bodySmall
         font.bold: true
       }
@@ -2121,7 +2188,7 @@ Panel {
 
     PanelActionButton {
       id: pcopy
-      anchors.right: pprivate.visible ? pprivate.left : poff.left
+      anchors.right: protate.visible ? protate.left : pprivate.visible ? pprivate.left : poff.left
       anchors.rightMargin: Style.space(2)
       anchors.verticalCenter: parent.verticalCenter
       iconText: Model.icons.copy
@@ -2132,8 +2199,22 @@ Panel {
     }
 
     PanelActionButton {
+      id: protate
+      visible: root.modernCli && prow.p.access === "token"
+      anchors.right: pprivate.visible ? pprivate.left : poff.left
+      anchors.rightMargin: Style.space(2)
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: Model.icons.refresh
+      tooltipText: "Replace preview token (orble port --new-token)"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: !prow.busyVerb
+      onClicked: root.request("port-new-token", prow.box + ":" + prow.p.port, [prow.box, String(prow.p.port)])
+    }
+
+    PanelActionButton {
       id: pprivate
-      visible: root.modernCli && prow.p.access === "public"
+      visible: root.modernCli && (prow.p.access === "public" || prow.p.access === "token")
       anchors.right: poff.left
       anchors.verticalCenter: parent.verticalCenter
       iconText: Model.icons.lock
